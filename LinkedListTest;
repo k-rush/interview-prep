@@ -1,0 +1,7 @@
+import java.util.Random;
+
+public class LinkedListTest {
+	public static void main(String[] args) {
+	
+	}	
+}
