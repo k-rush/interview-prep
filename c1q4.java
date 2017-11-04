@@ -8,7 +8,7 @@
 
 	Probably count the characters, if they're all even counts 
 	(except if string length is odd, then you can have one char with odd count), 
-	you can make a palindrome. RIGHT?
+	you can make a palindrome.
 
 	Tact Coa
 	String length (- whitespace ) = 7

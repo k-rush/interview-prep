@@ -1,5 +1,4 @@
-/* Singleton lazy initialization
- *
+/* Singleton lazy initialization						
  */
 
 import java.util.*;
@@ -8,7 +7,7 @@ public class Singleton {
 	private static Singleton instance = null;
 
 	private Singleton () {
-		//constructor
+		//constructor needs to be private
 	}
 
 	public static Singleton getInstance() {

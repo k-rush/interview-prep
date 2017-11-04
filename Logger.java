@@ -13,7 +13,7 @@ public class Logger {
 	}
 
 	public static void main(String[] args) {
-		Logger logger = new Logger(new PrintStreamAppender(System.out));
+		Logger logger = new Logger(new PrintStreamAppender());
 		logger.log(new Date(), "test message", "test severity");
 	}
 } 
