@@ -21,8 +21,12 @@ public class LinkedList <T> {
 		else {
 			Node<T> current = this.start;
 			while(current.next != null) {
-				if(current.next.data.equals(data)) current.next = current.next.next;
-				current = current.next;
+				if(current.next.data.equals(data)) {
+					if(current.next.next != null) current.next = current.next.next;
+					else current.next = null;
+					break;
+				}
+				else current = current.next;
 			}
 		}
 	}
@@ -44,12 +48,13 @@ public class LinkedList <T> {
 	*/
 
 	public String toString() {
-		String s = "";
 		Node<T> current = this.start;
-		do {
+		String s = "";
+		while (current.next != null) {
 			s = s + current.toString();
 			current = current.next;
-		} while (current.next != null);
+		}
+		s = s + current.toString();
 		return s;
 	}
 

@@ -8,7 +8,15 @@ public class LinkedListTester {
 
 		System.out.println(list.toString());
 
-		list.remove(2342);
+		list.remove(2342); //remove internal node
+
+		System.out.println(list.toString());
+
+		list.remove(4); //remove tail
+
+		System.out.println(list.toString());
+
+		list.remove(1); //remove head
 
 		System.out.println(list.toString());
 		
