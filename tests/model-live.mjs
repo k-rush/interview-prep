@@ -16,6 +16,11 @@ test('real local model conducts a conversation, asks adaptive probes and returns
   }
   const get = async id => (await app.request(`chats/${id}`,cookie)).json();
   const say = (id,revision,text)=>post(`chats/${id}/turns`,{text,revision,requestId:randomUUID(),zone:'UTC'});
+  await post('experience/sources',{category:'resume',title:'Synthetic resume',reviewed:true,useModel:true,excerpts:[
+    {location:'First line',text:'I worked as a Platform engineer.'},{location:'Second line',text:'I designed the rehearsal for Project Atlas.'}]});
+  const library=await (await app.request('experience',cookie)).json();
+  assert.ok(library.nodes.some(n=>n.kind==='role' && /engineer/i.test(n.label)),'The named role was not filed');
+  assert.ok(library.nodes.some(n=>n.kind==='project' && /Atlas/i.test(n.label)),'The named project was not filed');
   const {id:builder} = await post('chats',{kind:'builder',requestId:randomUUID()});
   await say(builder,0,'I built a checklist for a fictional release rehearsal.');
   const reply = (await get(builder)).messages.at(-1);

@@ -107,7 +107,7 @@ test('opt-in extraction and probes use bounded local packets and fall back on in
     const packet = JSON.parse(JSON.parse(body).messages[1].content);
     packets.push(packet);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ quotes: [packet.category === 'Resume' ? 'I wrote the notes.' : 'I led a launch.'],
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ labels:[{kind:'role',label:'Invented position'}], quotes: [packet.category === 'Resume' ? 'I wrote the notes.' : 'I led a launch.'],
       suggestion: { question: 37, quote: 'Revenue doubled.' } }) } }] }));
   });
   model.listen(0, '127.0.0.1'); await once(model, 'listening');
@@ -130,6 +130,11 @@ test('opt-in extraction and probes use bounded local packets and fall back on in
   await ok(app.request('experience/sources', a, 'POST', { category: 'resume', title: 'Synthetic resume',
     reviewed: true, useModel: true, excerpts: [{ location: 'Page 1', text: 'I wrote the notes. We discussed them.' }] }));
   assert.ok((await app.state(a)).facts.some(f => f.claim === 'I wrote the notes.' && f.source.includes('We discussed them.') && !f.confirmed));
+  await ok(app.request('experience/sources',a,'POST',{category:'project-write-up',title:'Project notes',reviewed:true,useModel:true,
+    excerpts:[{location:'Header',text:'Situation: Pilot review. The team checked its design.'}]}));
+  const library=await ok(app.request('experience',a));
+  assert.ok(library.nodes.some(n=>n.kind==='situation' && n.label==='Pilot review'));
+  assert.ok(!library.nodes.some(n=>n.label==='Invented position'));
 });
 
 test('merging conflicting evidence is explicit, rejects a stale snapshot and resets all permissions', async t => {

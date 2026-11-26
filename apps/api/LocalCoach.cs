@@ -64,13 +64,17 @@ public sealed class LocalCoach(HttpClient http)
         return text?.Trim() is { Length: > 8 and <= 300 } q && q.EndsWith('?') ? q : null;
     }
 
-    public async Task<T?> Call<T>(string instruction, object packet, string? property, CancellationToken ct, int maxTokens = 1000) where T : class
+    public async Task<T?> Call<T>(string instruction, object packet, string? property, CancellationToken ct, int maxTokens = 1000,
+        object? schema = null) where T : class
     {
+        var model = Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_ID") ?? "local";
+        object format = schema is not null && model == "studio-qwen2.5-1.5b"
+            ? new { type = "json_schema", json_schema = new { name = "studio_result", strict = true, schema } }
+            : new { type = "json_object" };
         var request = new
         {
             messages = new[] { new { role = "system", content = instruction }, new { role = "user", content = JsonSerializer.Serialize(packet) } },
-            model = Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_ID") ?? "local",
-            temperature = 0, max_tokens = maxTokens, response_format = new { type = "json_object" }
+            model, temperature = 0, max_tokens = maxTokens, response_format = format
         };
         try
         {
