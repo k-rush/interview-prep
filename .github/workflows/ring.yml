@@ -1,0 +1,77 @@
+name: Promote or roll back one ring
+on:
+  workflow_call:
+    inputs:
+      operation: {type: string, required: true}
+      ring: {type: string, required: true}
+      commit: {type: string, required: true}
+      digest: {type: string, required: true}
+      reason: {type: string, required: false}
+  workflow_dispatch:
+    inputs:
+      operation: {type: choice, options: [promote, rollback], required: true}
+      ring: {type: choice, options: [staging, production], required: true}
+      commit: {type: string, description: 'Verified source commit (40 hex characters)', required: true}
+      digest: {type: string, description: 'Signed image digest, including sha256 prefix', required: true}
+      reason: {type: string, description: 'Reason for rollback; no customer data', required: false}
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: >-
+      vars.RELEASES_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      contains(fromJSON('["staging","production"]'), inputs.ring) &&
+      contains(fromJSON('["promote","rollback"]'), inputs.operation)
+    environment: ${{ inputs.ring }}
+    concurrency:
+      group: mutate-${{ inputs.ring }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    env:
+      RING: ${{ inputs.ring }}
+      OPERATION: ${{ inputs.operation }}
+      COMMIT: ${{ inputs.commit }}
+      DIGEST: ${{ inputs.digest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require immutable coordinates and merged source
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$OPERATION" != rollback || "$REASON" =~ [^[:space:]] ]]
+          git merge-base --is-ancestor "$COMMIT" HEAD
+      - uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify trusted build and ring-specific evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          RELEASE_STORAGE_ACCOUNT: ${{ vars.RELEASE_STORAGE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          host=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          az acr login -n "$ACR_NAME"
+          gh attestation verify "oci://$host/interview-prep@$DIGEST" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref refs/heads/main --source-digest "$COMMIT" --deny-self-hosted-runners
+          node scripts/check-release.mjs "$OPERATION" "$RING" "$COMMIT" "$DIGEST"
+      - name: Apply under lease, smoke, then record the result
+        shell: pwsh
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          OPS_JOB: ${{ vars.OPS_JOB }}
+          OPS_CONTAINER: ${{ vars.OPS_CONTAINER }}
+        run: ./scripts/invoke-ops-job.ps1 -Operation $env:OPERATION -Ring $env:RING -Commit $env:COMMIT -Digest $env:DIGEST

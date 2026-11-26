@@ -1,0 +1,33 @@
+name: Verify
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check release policy and workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/check-release.test.mjs
+          bash scripts/test-infra-plan.sh
+          file="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL --retry 3 -o "$file" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $file" | sha256sum -c -
+          tar -xzf "$file" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+      - name: Application CI and no-cost agent replays
+        if: hashFiles('dev.ps1') != '' || vars.RELEASES_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File ./dev.ps1 test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File ./dev.ps1 eval replay

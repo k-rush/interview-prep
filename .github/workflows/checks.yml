@@ -1,0 +1,67 @@
+name: Observe rings or evaluate a staged agent
+on:
+  workflow_dispatch:
+    inputs:
+      task: {type: choice, options: [monitor, eval], required: true}
+      ring: {type: choice, description: 'Observe this ring; eval is staging-only', options: [staging, production], required: true}
+      commit: {type: string, description: 'For eval: staged source commit', required: false}
+      digest: {type: string, description: 'For eval: staged image digest', required: false}
+permissions:
+  contents: read
+jobs:
+  monitor:
+    if: >-
+      github.ref == 'refs/heads/main' && vars.MONITORING_ENABLED == 'true' && inputs.task == 'monitor'
+    environment: monitor-${{ inputs.ring }}
+    concurrency:
+      group: observe-${{ inputs.ring }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    permissions: {contents: read, id-token: write}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Check health and refresh evidence for the observed deployment
+        shell: pwsh
+        env:
+          RING: ${{ inputs.ring }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          OPS_JOB: ${{ vars.OPS_JOB }}
+          OPS_CONTAINER: ${{ vars.OPS_CONTAINER }}
+        run: ./scripts/invoke-ops-job.ps1 -Operation monitor -Ring $env:RING
+  eval:
+    if: >-
+      github.ref == 'refs/heads/main' && vars.LIVE_EVALS_ENABLED == 'true' &&
+      inputs.task == 'eval' && inputs.ring == 'staging'
+    environment: model-eval
+    concurrency:
+      group: staged-live-eval
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    permissions: {contents: read, id-token: write}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Evaluate the staged digest with synthetic fixtures and a fixed spend cap
+        shell: pwsh
+        env:
+          COMMIT: ${{ inputs.commit }}
+          DIGEST: ${{ inputs.digest }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          OPS_JOB: ${{ vars.OPS_JOB }}
+          OPS_CONTAINER: ${{ vars.OPS_CONTAINER }}
+        run: ./scripts/invoke-ops-job.ps1 -Operation eval -Ring staging -Commit $env:COMMIT -Digest $env:DIGEST

@@ -1,0 +1,64 @@
+name: Verify, publish and deploy staging
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', 'README.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+  publish:
+    needs: verify
+    if: vars.RELEASES_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: build
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build the web/API, worker and timer image once
+        id: build
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          set -euo pipefail
+          host=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          az acr login -n "$ACR_NAME"
+          image="$host/interview-prep"
+          docker buildx create --use --driver docker-container
+          docker buildx build --platform linux/amd64 --sbom=true --provenance=mode=min \
+            --tag "$image:run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --metadata-file "$RUNNER_TEMP/build.json" --push .
+          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/build.json")
+          printf 'image=%s\ndigest=%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+          printf 'Commit `%s`, image `%s@%s`\n' "$GITHUB_SHA" "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest the digest from this protected build
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+  staging:
+    needs: publish
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/ring.yml
+    with:
+      operation: promote
+      ring: staging
+      commit: ${{ github.sha }}
+      digest: ${{ needs.publish.outputs.digest }}
