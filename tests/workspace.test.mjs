@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { localHost } from './local-host.mjs';
 
@@ -12,7 +13,10 @@ test('a confirmed fact and unfinished mock survive restart, stay owner-scoped, a
   const claim = { claim: 'I wrote the checklist for the pilot.' };
   assert.equal((await app.request(`evidence/${id}/confirm`, b, 'POST', claim)).status, 404);
   assert.equal((await app.request(`evidence/${id}/confirm`, a, 'POST', claim)).status, 204);
-  const { id: mock } = await (await app.request('mocks', a, 'POST', { target: 'Platform engineer' })).json();
+  const start = { target:'Platform engineer',requestId:randomUUID() };
+  const { id: mock } = await (await app.request('mocks', a, 'POST', start)).json();
+  assert.equal((await (await app.request('mocks', a, 'POST',start)).json()).id,mock);
+  assert.equal((await app.request('mocks',a,'POST',{...start,target:'A different role'})).status,409);
   const answer = { index: 0, text: 'I wrote the fallback guide.' };
   assert.equal((await app.request(`mocks/${mock}/answers`, b, 'POST', answer)).status, 404);
   assert.equal((await app.request(`mocks/${mock}/answers`, a, 'POST', answer)).status, 204);

@@ -19,6 +19,11 @@ public sealed class Fact
     public required string Source { get; set; }
     public required string Claim { get; set; }
     public bool Confirmed { get; set; }
+    public bool AllowDrafts { get; set; }
+    public bool AllowLive { get; set; }
+    public string Origin { get; set; } = "candidate statement";
+    public Guid? SourceMockId { get; set; }
+    public int? SourceTurn { get; set; }
 }
 
 public sealed class Mock
@@ -29,6 +34,10 @@ public sealed class Mock
     public string Rubric { get; set; } = Practice.Version;
     public required string QuestionsJson { get; set; }
     public bool Tailored { get; set; }
+    public bool Adaptive { get; set; }
+    public Guid? StartKey { get; set; }
+    public Guid? TargetId { get; set; }
+    public DateTime? CompletedAt { get; set; }
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public string AnswersJson { get; set; } = "[]";
     public string? ReportJson { get; set; }
@@ -51,5 +60,11 @@ public sealed class PracticeDb(DbContextOptions<PracticeDb> options) : DbContext
         model.Entity<Workspace>().HasIndex(w => w.TokenHash).IsUnique();
         model.Entity<Fact>().HasOne<Workspace>().WithMany().HasForeignKey(f => f.WorkspaceId);
         model.Entity<Mock>().HasOne<Workspace>().WithMany().HasForeignKey(m => m.WorkspaceId);
+        model.Entity<Mock>().HasIndex(m => new { m.WorkspaceId, m.StartKey }).IsUnique();
+        Preparation.Configure(model);
+        LiveGuide.Configure(model);
+        ExperienceModule.Configure(model);
+        DiscoveryModule.Configure(model);
+        AccountsModule.Configure(model);
     }
 }

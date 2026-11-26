@@ -40,7 +40,7 @@ jobs:
           az acr login -n "$ACR_NAME"
           image="$host/interview-prep"
           docker buildx create --use --driver docker-container
-          docker buildx build --platform linux/amd64 --sbom=true --provenance=mode=min \
+          docker buildx build --platform linux/amd64 --build-arg SOURCE_REVISION="$GITHUB_SHA" --sbom=true --provenance=mode=min \
             --tag "$image:run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --metadata-file "$RUNNER_TEMP/build.json" --push .
           digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/build.json")
           printf 'image=%s\ndigest=%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"

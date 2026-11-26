@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const project = fileURLToPath(new URL('../apps/api/', import.meta.url));
-export async function localHost(t, modelPort) {
+export async function localHost(t, modelPort, overrides = {}) {
   const data = await mkdtemp(join(tmpdir(), 'interview-prep-fixture-'));
   let child, base;
   async function stop() {
@@ -17,10 +17,11 @@ export async function localHost(t, modelPort) {
     await done;
   }
   async function start() {
-    const env = { ...process.env, INTERVIEW_PREP_DATA: data, INTERVIEW_PREP_PORT: '0', ASPNETCORE_ENVIRONMENT: 'Production' };
-    delete env.INTERVIEW_PREP_MODEL_PORT;
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('INTERVIEW_PREP_'))),
+      ...overrides, INTERVIEW_PREP_DATA: data, INTERVIEW_PREP_PORT: '0', ASPNETCORE_ENVIRONMENT: 'Production' };
+    if (process.env.INTERVIEW_PREP_WEBROOT) env.INTERVIEW_PREP_WEBROOT = process.env.INTERVIEW_PREP_WEBROOT;
     if (modelPort) env.INTERVIEW_PREP_MODEL_PORT = String(modelPort);
-    child = spawn('dotnet', [join(project, 'bin', 'Debug', 'net10.0', 'InterviewPrep.Api.dll')],
+    child = spawn('dotnet', [join(project, 'bin', process.env.INTERVIEW_PREP_BUILD || 'Release', 'net10.0', 'InterviewPrep.Api.dll')],
       { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     await new Promise((resolve, reject) => {

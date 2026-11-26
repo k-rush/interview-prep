@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && esbuild src/main.tsx --bundle --minify --outfile=../api/wwwroot/assets/app.js"
+    "build": "tsc --noEmit && node build.mjs"
   },
   "dependencies": {
+    "fflate": "0.8.3",
+    "pdfjs-dist": "6.5.438",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

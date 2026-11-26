@@ -4,6 +4,30 @@ import { createServer } from 'node:http';
 import test from 'node:test';
 import { localHost } from './local-host.mjs';
 
+test('an adaptive follow-up uses the saved answer; a failed probe cannot discard it or rewrite an answered turn', async t=>{
+  const calls=[], neutral='Which alternative did you consider during that rehearsal?';
+  const fixture=createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    calls.push(JSON.parse(JSON.parse(raw).messages[1].content));
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({question:calls.length===1?neutral:'Not a question'})}}]}));
+  });
+  fixture.listen(0,'127.0.0.1');await once(fixture,'listening');
+  t.after(()=>{fixture.closeAllConnections();return new Promise(resolve=>fixture.close(resolve));});
+  const app=await localHost(t,fixture.address().port), cookie=await app.open();
+  const post=(p,b)=>app.request(p,cookie,'POST',b);
+  await post('evidence',{project:'Private project',statement:'Private unused note.'});
+  const {id}=await (await post('mocks',{target:'Platform engineer',adaptive:true})).json();
+  const original=(await app.state(cookie)).mocks[0].questions, path=`mocks/${id}/answers`;
+  const answer={index:0,text:'I designed a rehearsal.',question:original[0]};
+  assert.equal((await post(path,answer)).status,204);assert.equal((await post(path,answer)).status,204);
+  assert.equal((await app.state(cookie)).mocks[0].questions[1],neutral);
+  assert.equal((await post(path,{index:1,text:'A pilot.',question:original[1]})).status,409);
+  assert.equal((await post(path,{index:1,text:'A pilot.',question:neutral})).status,204);
+  const saved=(await app.state(cookie)).mocks[0];
+  assert.deepEqual(saved.answers,[answer.text,'A pilot.']);assert.equal(saved.questions[2],original[2]);
+  assert.equal(calls.length,2);assert.equal(calls[0].answer,answer.text);assert.ok(!JSON.stringify(calls).includes('Private unused note.'));
+});
+
 test('a local coach must cite the answers; unused facts and an ungraded retry cannot inflate the verdict', async t => {
   const answers = ['I wrote the launch checklist.', 'I chose a pilot over a one-step rollout.',
     'The rollout went well.', 'We rehearsed with one team before expanding.'];
