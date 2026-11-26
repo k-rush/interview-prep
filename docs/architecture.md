@@ -2,6 +2,8 @@
 
 **Two conversational agents, a live reminder view, and a scheduled job scout.** Use a modular monolith: a responsive React/TypeScript app served by an ASP.NET Core API, and a worker built from the same domain code. The model decides what to ask next in the builder or mock. The live guide selects prepared cue cards, not generated answers.
 
+**Implemented boundary:** the [first local slice](../README.md#run-the-practice-studio) uses the planned React/ASP.NET stack with a per-browser workspace and SQLite instead of managed auth/Postgres. It pins four questions at mock creation; an opt-in loopback model can tailor them to the role and later assess the frozen answers. The default is scripted questions plus self-assessment. No cloud research, worker, voice, turn-by-turn agent loop, live-interview capture or charging runs in this slice. The diagrams below describe the target service.
+
 ### What to borrow from Understory
 
 The [Understory reference](https://github.com/k-rush/understory) is access-controlled. Its bounded tool loop, capped history, streaming responses, operation traces, replay/live evaluation split and deployment-triage skills are useful precedents. Reuse those **patterns**, not private source, infrastructure identifiers or prompts. Keep the familiar .NET, Azure Container Apps, Blob, managed identity, OpenTelemetry and infrastructure-as-code workflow.

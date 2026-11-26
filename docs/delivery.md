@@ -1,6 +1,6 @@
 # Delivery plan for one person or a small team
 
-Build one thin, deployable candidate journey at a time. Keep product behavior, prompt/tool versions, data migrations, evaluations, infrastructure and runbooks under review together. The design packet, [GitHub Actions and release-policy checks](releases.md#the-workflow-inventory) exist. The application, infrastructure, contributor skills and local `dev.ps1` commands below are **planned**, not already implemented.
+Build one candidate journey at a time. The [local practice studio](../README.md#run-the-practice-studio) now implements evidence review, resumable text mocks, optional local-model planning/assessment, and an ungraded retry. `apps\web`, `apps\api`, `tests`, `dev.ps1` and [release workflows](releases.md#the-workflow-inventory) exist. The remainder of the layout below is a plan, not a claim of deployed infrastructure.
 
 ### Proposed monorepo
 
@@ -29,7 +29,7 @@ dev.ps1                     One entry point for common contributor tasks
 
 `Core` doesn't import cloud SDKs or a chat framework. Put adapter interfaces on the consuming side. Both hosts run the same policy and domain logic; never duplicate fact approval in a worker prompt. Generate typed client bindings from contracts. One Postgres migration history and one versioned artifact manifest per release. Avoid generic shared utility packages and independently deployed "agents" until there is an ownership or scaling reason.
 
-**Local path:** target a fresh clone -> `.\dev.ps1 up` (local Postgres, blob emulator, in-process queue and fake identity/model) -> `.\dev.ps1 seed` (two synthetic candidates) -> open the web app. `.\dev.ps1 test` is deterministic; `.\dev.ps1 eval replay` needs no API key. A live eval is a separate opt-in command against a test account with an explicit case set and spend ceiling. Test real queue locks, email/webhook signing, identity, object grants and speech in isolated staging; local fakes do not prove cloud wiring.
+**Local path today:** `.\dev.ps1 up` builds the React client and starts the loopback ASP.NET host and SQLite store. `.\dev.ps1 test` exercises the browser journey and two isolated workspaces; `.\dev.ps1 eval replay` runs an offline assessment fixture. No Docker, Stripe or model account is required. **Next:** replace local workspace tokens with verified identity and add Postgres migrations, tenant policies and deletion tests before any staging deployment using candidate data. Add blob, queue and speech integration tests as those features ship; a local replay does not prove cloud wiring or model quality.
 
 ### AI skills: contributor workflows, not runtime permissions
 

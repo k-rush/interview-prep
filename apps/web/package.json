@@ -1,0 +1,19 @@
+{
+  "name": "interview-prep-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/main.tsx --bundle --minify --outfile=../api/wwwroot/assets/app.js"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.3",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.65.1",
+    "typescript": "5.9.3"
+  }
+}

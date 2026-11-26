@@ -1,0 +1,29 @@
+:root { color-scheme: light; font: 17px/1.5 system-ui, sans-serif; color: #182e2b; background: #f5f7f2; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { display: flex; justify-content: space-between; align-items: center; background: #153d37; color: white; padding: .9rem max(5vw, calc((100% - 48rem)/2)); }
+header a { font-weight: 750; color: white; text-decoration: none; }
+header span { font-size: .85rem; }
+main { max-width: 50rem; margin: 2.5rem auto; padding: 0 1rem 3rem; overflow-wrap: anywhere; }
+h1 { font-size: clamp(2.2rem, 6vw, 3.5rem); line-height: 1.12; margin: .25rem 0 1rem; }
+h2, h3 { line-height: 1.24; margin: .4rem 0 .6rem; }
+section { background: white; border: 1px solid #c9d5cf; border-radius: .7rem; padding: clamp(1rem, 4vw, 1.8rem); margin: 1.25rem 0; }
+.eyebrow { text-transform: uppercase; letter-spacing: .085em; font-size: .76rem; font-weight: 750; color: #385e54; }
+.intro, .target { font-size: 1.15rem; }
+.target, blockquote { white-space: pre-wrap; }
+.muted { color: #50635d; font-size: .9rem; }
+a, summary { color: #135c50; }
+summary { cursor: pointer; }
+label { display: block; font-weight: 650; margin: .85rem 0; }
+input, textarea, select { display: block; margin-top: .3rem; padding: .6rem; width: 100%; border: 1px solid #81968c; border-radius: .35rem; font: inherit; color: inherit; }
+textarea { resize: vertical; }
+select { width: auto; }
+input[type="checkbox"] { display: inline; width: auto; margin: 0 .35rem 0 0; }
+button, .button { display: inline-block; border: 1px solid #155b4e; border-radius: .4rem; padding: .55rem .9rem; background: #155b4e; color: white; font: inherit; font-weight: 650; cursor: pointer; text-decoration: none; }
+.quiet { background: white; color: #155b4e; }
+button:disabled { opacity: .6; cursor: wait; }
+:focus-visible { outline: 3px solid #a04c13; outline-offset: 3px; }
+.actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.item { border-top: 1px solid #d1dbd3; padding: 1rem 0; margin-top: 1rem; }
+blockquote, .callout { border-left: 3px solid #4a8a77; background: #eef6f0; margin: .6rem 0; padding: .7rem 1rem; }
+.error { background: #fff1e7; color: #713015; padding: .75rem; }

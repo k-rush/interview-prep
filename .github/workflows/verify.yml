@@ -24,8 +24,14 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $file" | sha256sum -c -
           tar -xzf "$file" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint"
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
       - name: Application CI and no-cost agent replays
-        if: hashFiles('dev.ps1') != '' || vars.RELEASES_ENABLED == 'true'
         shell: pwsh
         run: |
           pwsh -NoProfile -File ./dev.ps1 test

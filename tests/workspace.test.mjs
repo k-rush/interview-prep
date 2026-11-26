@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { localHost } from './local-host.mjs';
+
+test('a confirmed fact and unfinished mock survive restart, stay owner-scoped, and can be forgotten', async t => {
+  const app = await localHost(t), a = await app.open(), b = await app.open();
+  assert.equal((await app.request('workspace')).status, 401);
+  const input = { project: 'Release toolkit', statement: 'Our team piloted a checklist.' };
+  assert.equal((await app.request('evidence', a, 'POST', input, { origin: 'https://unrelated.example' })).status, 403);
+  const { id } = await (await app.request('evidence', a, 'POST', input)).json();
+  assert.equal((await app.state(a)).facts[0].confirmed, false);
+  const claim = { claim: 'I wrote the checklist for the pilot.' };
+  assert.equal((await app.request(`evidence/${id}/confirm`, b, 'POST', claim)).status, 404);
+  assert.equal((await app.request(`evidence/${id}/confirm`, a, 'POST', claim)).status, 204);
+  const { id: mock } = await (await app.request('mocks', a, 'POST', { target: 'Platform engineer' })).json();
+  const answer = { index: 0, text: 'I wrote the fallback guide.' };
+  assert.equal((await app.request(`mocks/${mock}/answers`, b, 'POST', answer)).status, 404);
+  assert.equal((await app.request(`mocks/${mock}/answers`, a, 'POST', answer)).status, 204);
+  assert.equal((await app.request(`mocks/${mock}/answers`, a, 'POST', answer)).status, 204);
+  assert.equal((await app.request(`mocks/${mock}/answers`, a, 'POST', { ...answer, text: 'A different answer' })).status, 409);
+  assert.equal((await app.request(`mocks/${mock}/report`, a, 'POST', { assessor: 'self', points: [4,4,4,4] })).status, 409);
+  await app.restart();
+  const mine = await app.state(a), theirs = await app.state(b);
+  assert.deepEqual(mine.mocks[0].answers, [answer.text]);
+  assert.equal(mine.facts[0].source, input.statement);
+  assert.equal(mine.facts[0].claim, claim.claim);
+  assert.equal(mine.mocks[0].report, null);
+  assert.equal(mine.facts[0].confirmed, true);
+  assert.deepEqual([theirs.facts, theirs.mocks], [[], []]);
+  assert.equal((await app.request(`evidence/${id}`, b, 'DELETE')).status, 404);
+  assert.equal((await app.request(`evidence/${id}`, a, 'DELETE')).status, 204);
+  assert.deepEqual((await app.state(a)).facts, []);
+  assert.equal((await app.request('workspace', a, 'DELETE')).status, 204);
+  assert.equal((await app.request('workspace', a)).status, 401);
+  assert.equal((await app.request('workspace', b)).status, 200);
+});

@@ -1,10 +1,26 @@
 # Interview Prep
 
-**Product and architecture proposal | 25 November 2026 | Release workflows included; no deployed service**
+**Local practice alpha + product design | No deployed service or billing**
 
 Build a private interview coach around an **editable evidence library**, not a chat transcript. A candidate can tell a story, attach a performance review or referral, or link a project, then confirm what the evidence says about their contribution. The same example can inform mock feedback, an application, or a short reminder during a real interview where notes are permitted.
 
 **Launch recommendation:** start with US-based, English-speaking mid-career software engineers preparing for a hiring-manager or behavioral round in the next two weeks. Prove that a second practice answer gets better. Add daily job discovery after candidates trust the coach with their experience; don't start by building another job board.
+
+### Run the practice studio
+
+With the .NET 10 SDK, Node 20.10+ with npm, and PowerShell 7.3+, run:
+
+```powershell
+.\dev.ps1 up
+```
+
+Open **http://127.0.0.1:5187**. Try the fictional browser-only exercise or open a separate local workspace. Describe a project, edit and confirm a statement, then paste a target role, answer four mock questions, review the debrief and retry one answer without changing the original grade. Submitted answers survive closing the browser or restarting the app.
+
+The default is a **guided self-assessment**, not an AI grading service. For model-assisted practice, run a trusted **local** llama.cpp-compatible server with a model already loaded, set `$env:INTERVIEW_PREP_MODEL_PORT = '8080'` to its loopback port, and restart the studio. Tailoring questions and assessing answers are separate opt-ins. The assessor sees the role, the questions actually asked, and the answers, never the experience library. The app downloads no models, uses no cloud API key, and does not substitute a verdict when the model fails.
+
+**Privacy boundary:** this is for local development, not a hosted multi-user service. A 30-day HTTP-only browser cookie unlocks one workspace. SQLite stores its contents on the local disk, **not encrypted by the app**; use synthetic material on a shared machine. On Windows the default location is `%LOCALAPPDATA%\InterviewPrep`; set `INTERVIEW_PREP_DATA` to a private directory to override it. Use **Delete my workspace** before clearing browser cookies if you want the records removed immediately. Expired workspaces are purged on startup. Do not expose the loopback server through a tunnel.
+
+`.\dev.ps1 test` runs the API and real-browser journey against temporary databases (Chrome/Edge/Chromium required; `INTERVIEW_PREP_BROWSER` can point at its executable). `.\dev.ps1 eval replay` exercises the model protocol with a synthetic local fixture: it tests grounding and failure handling, **not model quality**. Sign-in, Postgres, document import, voice, schedules, scouting, billing and cloud deployment remain planned.
 
 ```mermaid
 flowchart LR
