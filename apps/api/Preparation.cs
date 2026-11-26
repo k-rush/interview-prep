@@ -15,6 +15,8 @@ public sealed class InterviewTarget
     public string? JobUrl { get; set; }
     public string ResearchJson { get; set; } = "[]";
     public DateTime? ResearchedAt { get; set; }
+    public DateTime? InterviewAt { get; set; }
+    public string? InterviewZone { get; set; }
     public string ResearchStatus { get; set; } = "Not consulted";
     public ResearchSource[] Sources() => JsonSerializer.Deserialize<ResearchSource[]>(ResearchJson)!
         .Where(s => !s.ExpiresAt.HasValue || s.ExpiresAt > DateTimeOffset.UtcNow).ToArray();
@@ -145,7 +147,7 @@ public static class Preparation
         {
             var targets = await db.Set<InterviewTarget>().AsNoTracking().Where(t => t.WorkspaceId == Owner(c)).ToArrayAsync();
             return Results.Ok(targets.Select(t => new { t.Id, t.Role, t.Company, t.Level, t.Round, t.Description, t.JobUrl,
-                t.ResearchStatus, t.ResearchedAt, sources = t.Sources() }));
+                interviewAt = t.InterviewAt is { } at ? (DateTime?)Utc(at) : null, t.InterviewZone, t.ResearchStatus, t.ResearchedAt, sources = t.Sources() }));
         });
         app.MapPost("/api/targets", async (TargetInput input, PracticeDb db, HttpContext c) =>
         {
@@ -190,10 +192,9 @@ public static class Preparation
             var proposed = Arrange(free, preserved, TimeZoneInfo.FindSystemTimeZoneById(input.Zone));
             if (mode == "preview") return Results.Ok(new { blocks = proposed.Select(BlockView), preserved = preserved.Length });
             if (proposed.Count == 0 && preserved.Length == 0) return Results.Conflict("No practice block fits; the existing plan has not changed.");
-            if (plan is null) { plan = new() { WorkspaceId = Owner(c), TargetId = id, Zone = input.Zone, WindowsJson = "" }; db.Add(plan); }
-            foreach (var b in plan.Blocks.Except(preserved).ToArray()) db.Remove(b);
-            plan.InterviewAt = input.InterviewAt.UtcDateTime; plan.Zone = input.Zone; plan.WindowsJson = JsonSerializer.Serialize(windows);
-            foreach (var b in proposed) { b.ScheduleId = plan.Id; db.Add(b); }
+            if (plan is not null)
+                foreach (var b in plan.Blocks.Except(preserved).ToArray()) db.Remove(b);
+            StoreBlocks(db, Owner(c), id, plan, input with { Windows = windows }, proposed);
             await db.SaveChangesAsync(); return Results.NoContent();
         });
         app.MapGet("/api/targets/{id:guid}/progress", async (Guid id, PracticeDb db, HttpContext c) =>
@@ -301,11 +302,21 @@ public static class Preparation
         slots.SelectMany(w => w.End <= start || w.Start >= end ? [w] : new[] { new Window(w.Start, start), new Window(end, w.End) }
             .Where(x => x.Start < x.End)).ToList();
 
-    static List<PrepBlock> Arrange(List<Window> free, PrepBlock[] kept, TimeZoneInfo zone)
+    internal static void StoreBlocks(PracticeDb db, Guid owner, Guid targetId, PrepSchedule? plan, PlanInput input, List<PrepBlock> proposed)
     {
-        (string Kind, string Label, int Minutes)[] wanted = [("mock","Baseline mock",25),("review","Review feedback",15),
-            ("mock","Follow-up mock",25),("drill","Final rehearsal",10)];
-        foreach (var candidate in new[] { wanted, wanted[..3], wanted[..2], wanted[..1], wanted[3..] })
+        if (plan is null) { plan = new() { WorkspaceId = owner, TargetId = targetId, Zone = input.Zone!, WindowsJson = "" }; db.Add(plan); }
+        plan.InterviewAt = input.InterviewAt.UtcDateTime; plan.Zone = input.Zone!; plan.WindowsJson = JsonSerializer.Serialize(input.Windows);
+        foreach (var b in proposed) { b.ScheduleId = plan.Id; db.Add(b); }
+    }
+
+    internal const int MockMinutes = 25;
+    internal static List<PrepBlock> Arrange(List<Window> free, PrepBlock[] kept, TimeZoneInfo zone, bool mocksOnly = false)
+    {
+        (string Kind, string Label, int Minutes)[] wanted = [("mock","Baseline mock",MockMinutes),("review","Review feedback",15),
+            ("mock","Follow-up mock",MockMinutes),("drill","Final rehearsal",10)];
+        var options = mocksOnly ? new[] { new[] { wanted[0], wanted[2] }, wanted[..1] } :
+            new[] { wanted, wanted[..3], wanted[..2], wanted[..1], wanted[3..] };
+        foreach (var candidate in options)
         foreach (var spaceDays in new[] { true, false })
         {
             var result = new List<PrepBlock>(); var deadline = DateTimeOffset.MaxValue; bool fits = true;

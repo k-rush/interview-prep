@@ -80,7 +80,7 @@ test('local PDF, DOCX and text previews let the candidate select and redact with
   assert.ok(serves.every(([method]) => method === 'GET'), 'preview must read local scripts only, not post any file or excerpt');
 });
 
-test('library UI resumes an editable builder and saves only the reviewed pasted excerpt', async t => {
+test('job experience imports only the reviewed pasted excerpt and opens the conversational builder', async t => {
   const app = await localHost(t), cookie = await app.open();
   const browser = await launchBrowser(t), context = await browser.newContext();
   const [name, value] = cookie.split('=');
@@ -89,17 +89,7 @@ test('library UI resumes an editable builder and saves only the reviewed pasted 
   page.on('pageerror', e => errors.push(e.message));
   await page.route('**/*', route => new URL(route.request().url()).origin === app.url ? route.continue() : route.abort());
   await page.goto(`${app.url}/#workspace/library`);
-  await page.getByLabel('What role are you seeking?').fill('Fixture engineer');
-  await page.getByLabel('How many minutes do you have?', { exact: false }).fill('5');
-  await page.getByRole('button', { name: 'Start context builder' }).click();
-  await page.getByLabel('Your builder answer').fill('Test engineer');
-  await page.getByRole('button', { name: 'Save builder answer' }).click();
-  await page.locator('.callout').filter({ hasText: /What short label/ }).waitFor();
-  await page.getByRole('button', { name: 'Pause builder' }).click();
-  await page.getByRole('button', { name: 'Resume conversation' }).waitFor();
-  await page.reload();
-  await page.getByRole('button', { name: 'Resume conversation' }).click();
-  await page.locator('.callout').filter({ hasText: /What short label/ }).waitFor();
+  await page.getByText('Import a document or link',{exact:true}).click();
   await page.getByLabel('Evidence category').selectOption('performance-review');
   await page.getByLabel('Private source title').fill('Sample assessment');
   await page.getByLabel('Or paste text for a private preview').fill('Synthetic Name: our team reviewed the plan.');
@@ -113,5 +103,7 @@ test('library UI resumes an editable builder and saves only the reviewed pasted 
   assert.equal(facts[0].confirmed, false);
   assert.doesNotMatch(facts[0].source, /Synthetic Name/);
   assert.equal(facts[0].claim, 'Our team reviewed the plan.');
+  await page.getByRole('link',{name:'talk it through in Chat'}).click();
+  await page.getByLabel('Message your coach').waitFor();
   assert.deepEqual(errors, []);
 });

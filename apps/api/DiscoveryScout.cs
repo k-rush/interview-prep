@@ -96,10 +96,11 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
         return [.. lines];
     }
 
-    internal async Task<IResult> Run(Guid owner, bool scheduled, CancellationToken ct)
+    internal async Task<IResult> Run(Guid owner, bool scheduled, CancellationToken ct, string? chatRole = null)
     {
         var now = Now;
         var settings = await Settings(owner, ct);
+        if (settings is not null && chatRole is not null) settings.Role = chatRole;
         if (settings is null || settings.Role.Length == 0) return Results.BadRequest("Save a target role before scouting.");
         if (scheduled && (!settings.Enabled || settings.NextDueUtc is null || settings.NextDueUtc > now)) return Results.NoContent();
         if (!await Active(owner, now, ct)) return Results.Unauthorized();
@@ -185,8 +186,33 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
                     "One pair is ready for your review. Nothing was sent.";
             }
         }
+        if (chatRole is null) ChatModule.PublishDigest(db, digest);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Results.Ok(new { digest.Id, digest.LocalDate, replay = false });
+    }
+
+    internal async Task<(Guid? Id, string Text)> ChatReport(Guid owner, string role, string zone, CancellationToken ct)
+    {
+        if (!await AccountsModule.AllowScoutAsync(db, owner)) return (null, "This plan has no new job searches. Existing reports are still available.");
+        await using (var setup = await db.Database.BeginTransactionAsync(ct))
+        {
+            if (!await db.Set<DiscoverySettings>().AnyAsync(x => x.WorkspaceId == owner, ct))
+            {
+                db.Add(new DiscoverySettings { WorkspaceId = owner, Role = role, Zone = DiscoveryCalendar.Valid(zone, "09:00") ? zone : "UTC" });
+                await db.SaveChangesAsync(ct);
+            }
+            await setup.CommitAsync(ct);
+        }
+        var result = await Run(owner, false, ct, role);
+        if (result is not IValueHttpResult { Value: { } value } || result is IStatusCodeHttpResult { StatusCode: not 200 })
+            return (null, "The search could not publish a current digest. Check permissions and try again. No opening was inferred.");
+        var id = JsonSerializer.SerializeToElement(value).GetProperty("Id").GetGuid();
+        var digest = await db.Set<DiscoveryDigest>().AsNoTracking().SingleAsync(x => x.WorkspaceId == owner && x.Id == id, ct);
+        var matches = await db.Set<DiscoveryMatch>().AsNoTracking().Where(m => m.WorkspaceId == owner && m.DigestId == id).Select(m => m.Id).ToArrayAsync(ct);
+        foreach (var match in matches) await CreatePair(owner, match, ct);
+        var existing = digest.TargetRole.Equals(role, StringComparison.OrdinalIgnoreCase) ? "" : $"Today's digest was already run for {digest.TargetRole}, not {role}. ";
+        return (id, $"{existing}Job scout report · {digest.TargetRole} · {digest.LocalDate}\n{matches.Length} matching listing(s) in the permitted sources. " +
+            $"{digest.NextStep}\nOpen the report below for coverage, compensation and application materials. Nothing was sent.");
     }
 
     private static string PinHash(Fact f, ScoutInventory inv) => DiscoveryFit.Hash(DiscoveryFit.FactHash(f),
@@ -239,13 +265,13 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
             "Not specified", "Not scheduled", string.Join("\n", lines), j.Url));
     }
 
-    internal async Task<IResult> State(Guid owner, CancellationToken ct)
+    internal async Task<IResult> State(Guid owner, CancellationToken ct, Guid? digestId = null)
     {
         // Read one consistent snapshot: do not combine an old fact with a newer approval or deletion.
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var s = await Settings(owner, ct) ?? new() { WorkspaceId = owner };
         var inv = await Inventory(owner, ct);
-        var digests = await db.Set<DiscoveryDigest>().AsNoTracking().Where(x => x.WorkspaceId == owner)
+        var digests = await db.Set<DiscoveryDigest>().AsNoTracking().Where(x => x.WorkspaceId == owner && (digestId == null || x.Id == digestId))
             .OrderByDescending(x => x.CreatedUtc).Take(31).ToArrayAsync(ct);
         var ids = digests.Select(d => d.Id).ToArray();
         var matches = await db.Set<DiscoveryMatch>().AsNoTracking().Where(x => x.WorkspaceId == owner && ids.Contains(x.DigestId))

@@ -29,8 +29,8 @@ function wave(samples: Float32Array[]) {
   return new Blob([raw], { type: "audio/wav" });
 }
 
-export function VoiceInput({ value, onChange, label, maxLength, prompt, name, required }: {
-  value: string; onChange: (text: string) => void; label: string; maxLength: number; prompt?: string; name?: string; required?: boolean;
+export function VoiceInput({ value, onChange, label, maxLength, prompt, name, required, compact }: {
+  value: string; onChange: (text: string) => void; label: string; maxLength: number; prompt?: string; name?: string; required?: boolean; compact?: boolean;
 }) {
   const inputId = useId();
   const [active, setActive] = useState(false), [note, setNote] = useState("");
@@ -111,12 +111,14 @@ export function VoiceInput({ value, onChange, label, maxLength, prompt, name, re
     if (!voice || !prompt) { setNote("No local English reading voice is available."); return; }
     synth.cancel(); const utterance = new SpeechSynthesisUtterance(prompt); utterance.voice = voice; synth.speak(utterance);
   }
-  return <div><label htmlFor={inputId}>{label}</label><textarea id={inputId} name={name} rows={4} required={required} maxLength={maxLength} value={value} onChange={e => onChange(e.target.value)} />
-    {showFallback && <label><input type="checkbox" checked={fallback} onChange={e=>{allowFallback(e.target.checked);if(!e.target.checked)cancel();}}/>
+  const voice = <>{showFallback && <label><input type="checkbox" checked={fallback} onChange={e=>{allowFallback(e.target.checked);if(!e.target.checked)cancel();}}/>
       Allow up to 45 seconds of practice audio per turn to the configured speech server on this computer. Audio is not saved by the studio.</label>}
     <div className="actions"><button className="quiet" type="button" onClick={() => transcribing ? cancel() : active ? stop.current?.(true) : void begin()}>{transcribing ? "Cancel transcription" : active ? "Stop microphone" : "Dictate locally"}</button>
       {prompt && <><button type="button" className="quiet" disabled={active} onClick={speak}>Read prompt aloud</button>
         <button type="button" className="quiet" onClick={() => window.speechSynthesis?.cancel()}>Stop reading</button></>}</div>
     <small role="status">{note || "Microphone off. Dictation uses an installed on-device recognizer, never cloud recognition. Review the caption before sending."}</small>
-  </div>;
+  </>;
+  return <div><label htmlFor={inputId} className={compact ? "sr-only" : undefined}>{label}</label><textarea id={inputId} name={name} rows={compact ? 2 : 4}
+    placeholder={compact ? "Message your coach…" : undefined} required={required} maxLength={maxLength} value={value} onChange={e => onChange(e.target.value)} />
+    {compact ? <details className="voice-tools"><summary>Voice options</summary>{voice}</details> : voice}</div>;
 }

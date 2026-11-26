@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, values, type Act, type Fact, type Workspace } from "./client";
 import { DocumentPreview } from "./ExperienceDocuments";
-import { VoiceInput } from "./Voice";
 
-type Node = { id: string; kind: "role" | "project"; label: string; employer: string; dates: string; parentRoleId: string | null; revision: number };
+type Node = { id: string; kind: "role" | "project" | "situation"; label: string; employer: string; dates: string; parentRoleId: string | null; revision: number };
 type Source = { id: string; category: string; title: string; url: string | null; nodeId: string | null; createdAt: string };
 type Builder = { id: string; goal: string; minutes: number | null; stage: string; state: string; revision: number; useModel: boolean };
 type Citation = { id: string; factId: string; nodeId: string | null; sourceId: string | null; turnId: string | null; location: string; attributedExcerpt: string };
@@ -13,11 +12,11 @@ type Transcript = { session: Builder & { roleId: string | null; projectId: strin
 type Props = { data: Workspace; act: Act; busy: boolean };
 type ActionProps = { change: Act; busy: boolean };
 const categories: Record<string, string> = { resume: "Resume", "performance-review": "Performance review", referral: "Written referral or recommendation",
-  "linkedin-export": "My LinkedIn export", "project-bookmark": "Project bookmark", "project-write-up": "Project write-up", "work-sample": "Work sample" };
+  email: "Email correspondence", "linkedin-export": "My LinkedIn profile or export", "project-bookmark": "Project bookmark", "project-write-up": "Project documentation", "work-sample": "Work sample" };
 const nameOf = (nodes: Node[], id: string | null) => nodes.find(n => n.id === id)?.label ?? "Unfiled";
 
 export function Experience({ data, act, busy }: Props) {
-  const [library, setLibrary] = useState<Library | null>(null), [selected, select] = useState(""), [error, setError] = useState("");
+  const [library, setLibrary] = useState<Library | null>(null), [error, setError] = useState("");
   const load = async () => { setLibrary(await api<Library>("experience")); setError(""); };
   useEffect(() => {
     let live = true;
@@ -28,39 +27,17 @@ export function Experience({ data, act, busy }: Props) {
     await action(); await load();
     if (typeof BroadcastChannel !== "undefined") { const ch = new BroadcastChannel("practice-library"); ch.postMessage("changed"); ch.close(); }
   });
-  const current = library?.builders.find(b => b.id === selected) ?? library?.builders[0];
-  return <><p className="eyebrow">My experience / private library</p><h1>Build your experience library</h1>
-    <p>Start with a conversation or bring a source. A project link, someone else’s praise, and a team outcome are not proof of your personal contribution.</p>
+  return <><p className="eyebrow">Your library</p><h1>Job experience</h1>
+    <p className="intro">Keep the stories behind your resume. Bring a document, link a profile, or <a href="#workspace/new/builder">talk it through in Chat</a>.</p>
     {error && <p role="alert">{error}</p>}
-    <button className="quiet" disabled={busy} onClick={() => void act(load)}>Refresh library</button>
     {!library ? <p role="status">{error ? "Unable to open the library." : "Opening your library…"}</p> : <>
-      <section><h2>Talk through your experience</h2>
-        <details open={!library.builders.length}><summary>Start a context-building conversation</summary>
-          <form onSubmit={e => {
-            e.preventDefault(); const form = e.currentTarget, v = values(form);
-            void change(async () => {
-              const { id } = await api<{ id: string }>("experience/builders", "POST",
-                { goal: v.goal, minutes: v.minutes ? Number(v.minutes) : null, useModel: v.model === "on" });
-              select(id); form.reset();
-            });
-          }}>
-            <label>What role are you seeking?<input name="goal" required maxLength={240} /></label>
-            <label>How many minutes do you have? (optional)<input name="minutes" type="number" min={1} max={120} /></label>
-            <p className="muted">Five minutes or less gives a shorter conversation. Role and project names organize the library; they are not approved resume claims.</p>
-            {data.localCoachEnabled && <label><input type="checkbox" name="model" /> Let the configured local model choose a follow-up and suggest an exact excerpt from my submitted answer. Only my goal and that answer are shared.</label>}
-            <button disabled={busy}>Start context builder</button>
-          </form>
-        </details>
-        {current && <><label>Saved conversations<select value={current.id} onChange={e => select(e.target.value)}>
-          {library.builders.map(b => <option key={b.id} value={b.id}>{b.goal} · {b.state}</option>)}
-        </select></label>
-          <Conversation key={`${current.id}:${current.revision}`} builder={current} library={library} data={data} change={change} busy={busy} /></>}
-      </section>
-      <section><h2>Roles and projects</h2><p>Browse or correct the labels you supplied, with or without a conversation.</p>
-        <details><summary>Add a role or project</summary><NodeEditor nodes={library.nodes} change={change} busy={busy} /></details>
+      <section><details><summary>Import a document or link</summary><EvidenceImport nodes={library.nodes} change={change} busy={busy} model={data.localCoachEnabled} /></details>
+        <p className="muted">Resume, review, email, LinkedIn export or project notes. Choose exactly which passages to keep.</p></section>
+      <section><h2>Jobs, projects &amp; situations</h2>
+        {!library.nodes.length && <p className="muted">Your first role or project will appear here when you describe it in Chat.</p>}
         {library.nodes.map(n => {
           const facts = data.facts.filter(f => library.citations.some(c => c.nodeId === n.id && c.factId === f.id));
-          return <details key={n.id} className="item"><summary>{n.kind === "role" ? "Role" : "Project"}: {n.label}</summary>
+          return <details key={n.id} className="item"><summary>{n.kind === "role" ? "Role" : n.kind === "project" ? "Project" : "Situation"}: {n.label}</summary>
             {n.parentRoleId && <p>Role: {nameOf(library.nodes, n.parentRoleId)}</p>}
             {(n.employer || n.dates) && <p>{[n.employer, n.dates].filter(Boolean).join(" · ")}</p>}
             {facts.length > 0 ? <ul>{facts.map(f => <li key={f.id}>{f.claim} <small>({f.confirmed ? "confirmed" : "needs review"})</small></li>)}</ul>
@@ -73,9 +50,8 @@ export function Experience({ data, act, busy }: Props) {
           </details>;
         })}
       </section>
-      <section><h2>Add evidence</h2><EvidenceImport nodes={library.nodes} change={change} busy={busy} model={data.localCoachEnabled} />
-        {!!library.sources.length && <h3>Saved sources</h3>}
-        {library.sources.map(s => <details className="item" key={s.id}><summary>{s.title} · {categories[s.category]}</summary>
+      {!!library.sources.length && <section><h2>Saved sources</h2>
+        {library.sources.map(s => <details className="item" key={s.id}><summary>{s.title} · {s.category === "chat" ? "Conversation" : categories[s.category]}</summary>
           <p>{nameOf(library.nodes, s.nodeId)} · Saved {new Date(s.createdAt).toLocaleDateString()}</p>
           {s.url && <p>Bookmark only (not fetched): <code>{s.url}</code></p>}
           {library.citations.filter(c => c.sourceId === s.id).map(c => {
@@ -87,7 +63,7 @@ export function Experience({ data, act, busy }: Props) {
               void change(() => api(`experience/sources/${s.id}`, "DELETE"));
           }}>Forget source and linked facts</button>
         </details>)}
-      </section>
+      </section>}
       <CompareFacts facts={data.facts.filter(f => library.citations.some(c => c.factId === f.id))} change={change} busy={busy} />
       <BaseResume data={data} act={act} busy={busy} />
     </>}
@@ -127,7 +103,7 @@ function NodeEditor({ node, nodes, change, busy }: ActionProps & { node?: Node; 
     void change(async () => {
       await api(node ? `experience/nodes/${node.id}` : "experience/nodes", node ? "PUT" : "POST",
         { kind, label: v.label, employer: kind === "role" ? v.employer : "", dates: v.dates,
-          parentRoleId: kind === "project" && v.parentRoleId || null, revision: node?.revision });
+          parentRoleId: kind !== "role" && v.parentRoleId || null, revision: node?.revision });
       if (!node) { form.reset(); setKind("role"); }
     });
   }}>
@@ -141,50 +117,22 @@ function NodeEditor({ node, nodes, change, busy }: ActionProps & { node?: Node; 
   </form>;
 }
 
-function Conversation({ builder, library, data, change, busy }: ActionProps & { builder: Builder; library: Library; data: Workspace }) {
-  const [detail, setDetail] = useState<Transcript | null>(null), [error, err] = useState(""), [text, setText] = useState(""), [nodeId, pick] = useState("");
-  const clientId = useRef(crypto.randomUUID()), path = `experience/builders/${builder.id}`;
+export function ArchivedConversation({ id, act, busy }: {id: string; act: Act; busy: boolean}) {
+  const [detail, setDetail] = useState<Transcript | null>(null), [error, err] = useState("");
+  const path = `experience/builders/${id}`;
   useEffect(() => { let live = true;
     api<Transcript>(path).then(d => { if (live) setDetail(d); }).catch(e => { if (live) err(e.message); });
     return () => { live = false; };
   }, [path]);
   if (!detail) return <p role={error ? "alert" : "status"}>{error || "Opening the saved transcript…"}</p>;
-  const { session: b, turns } = detail, last = turns[turns.length - 1];
-  const possible = library.nodes.filter(n => n.kind === b.stage && (b.stage !== "project" || !b.roleId || b.roleId === n.parentRoleId));
-  const gaps = turns.filter(t => t.speaker === "candidate" && t.mode !== "answer").map(t => `${t.stage} (${t.mode === "skip" ? "skipped" : "unknown"})`);
-  const ids = library.citations.filter(c => turns.some(t => t.id === c.turnId)).map(c => c.factId);
-  const facts = data.facts.filter(f => ids.includes(f.id));
-  function send(mode: string) {
-    return change(() => api(`${path}/turns`, "POST", { clientTurnId: clientId.current, revision: b.revision, mode, text: mode === "answer" ? text : null,
-      nodeId: mode === "answer" && nodeId ? nodeId : null }));
-  }
-  const state = (s: string) => change(() => api(`${path}/state`, "POST", { revision: b.revision, state: s }));
-  return <article className="item"><p className="eyebrow">{b.state} · {b.useModel ? "Local coach with guided fallback" : "Guided prompts"}</p>
-    <h3>{b.goal}</h3>
-    {b.state === "active" && <><p className="callout"><strong>{last.text}</strong></p>
-      <form onSubmit={e => { e.preventDefault(); void send("answer"); }}>
-        {!!possible.length && <label>Use an existing {b.stage} (optional)<select value={nodeId} onChange={e => {
-          pick(e.target.value); setText(possible.find(n => n.id === e.target.value)?.label ?? "");
-        }}><option value="">Enter a new label</option>{possible.map(n => <option key={n.id} value={n.id}>{n.label}</option>)}</select></label>}
-        <VoiceInput label="Your builder answer" required value={text} onChange={v => { setText(v); if (nodeId && v !== nameOf(library.nodes, nodeId)) pick(""); }}
-          maxLength={["role","project","dates"].includes(b.stage) ? 100 : b.stage === "employer" ? 120 : 1500} prompt={last.text} />
-        <div className="actions"><button disabled={busy}>Save builder answer</button>
-          <button type="button" className="quiet" disabled={busy} onClick={() => void send("skip")}>Skip this question</button>
-          <button type="button" className="quiet" disabled={busy} onClick={() => void send("unknown")}>Mark unknown</button></div>
-      </form></>}
-    <p>{facts.filter(f => !f.confirmed).length} statements awaiting review · {facts.filter(f => f.confirmed).length} confirmed from this conversation.</p>
-    {gaps.length > 0 && <p>Not established: {gaps.join(", ")}. No facts were created for these gaps.</p>}
-    <details><summary>Read committed transcript ({turns.length} turns)</summary>
-      <ol>{turns.map(t => <li key={t.id}><strong>{t.speaker === "coach" ? "Coach" : "You"} · {t.stage}</strong><p>{t.text}</p></li>)}</ol>
-    </details>
-    <div className="actions">{b.state === "active" && <button className="quiet" disabled={busy} onClick={() => void state("paused")}>Pause builder</button>}
-      {b.state === "paused" && <button disabled={busy} onClick={() => void state("active")}>Resume conversation</button>}
-      {b.state !== "closed" && <button className="quiet" disabled={busy} onClick={() => void state("closed")}>Finish and review facts</button>}
-      <button className="quiet" disabled={busy} onClick={() => {
+  return <><a href="#workspace/history">Chat history</a><p className="eyebrow">Earlier conversation</p><h1>{detail.session.goal}</h1>
+    <ol className="transcript">{detail.turns.map(t => <li key={t.id} className={t.speaker === "coach" ? "assistant" : "user"}>
+      <small>{t.speaker === "coach" ? "Coach" : "You"}</small><p>{t.text}</p></li>)}</ol>
+    <a className="button" href="#workspace/new/builder">Continue in a new chat</a>{" "}
+    <button className="quiet" disabled={busy} onClick={() => {
         if (window.confirm("Forget this conversation, its transcript and all its linked facts? Named role/project records remain; you can forget those separately."))
-          void change(() => api(path, "DELETE"));
-      }}>Forget conversation</button></div>
-  </article>;
+          void act(async () => { await api(path, "DELETE"); location.hash = "workspace/history"; });
+      }}>Forget conversation</button></>;
 }
 
 type Excerpt = { text: string; location: string };
@@ -227,7 +175,7 @@ function EvidenceImport({ nodes, change, busy, model }: ActionProps & { nodes: N
         onChange={e => setSnips(snips.map((p, k) => k === i ? { ...p, text: e.target.value } : p))} /></label>
       <button className="quiet" type="button" onClick={() => setSnips(snips.filter((_, k) => k !== i))}>Remove excerpt {i + 1}</button>
     </div>)}
-    {model && !!snips.length && <label><input type="checkbox" name="model" /> Ask the configured local model to suggest verbatim quotes from only these reviewed passages.</label>}
+    {model && !!snips.length && <label><input type="checkbox" name="model" defaultChecked/> Let local AI organize these reviewed passages into job, project or situation labels. Review statements before reuse.</label>}
     <label><input required type="checkbox" name="reviewed" /> I have permission to use this material and reviewed the title, link and excerpts for private information.</label>
     <p>Only the displayed title, bookmark, and selected excerpts are saved. Reviewers’ opinions remain attributed to the source. Drafts and live reminders are off until you explicitly allow them.</p>
     <button disabled={busy}>Save reviewed evidence</button>{message && <p role="status">{message}</p>}

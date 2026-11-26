@@ -55,9 +55,11 @@ if (modelPort is not null && (!int.TryParse(modelPort, out var n) || n is < 1 or
 builder.Services.AddHttpClient<LocalCoach>(http =>
 {
     http.BaseAddress = new Uri($"http://127.0.0.1:{modelPort ?? "8080"}/");
-    http.Timeout = TimeSpan.FromSeconds(45);
+    http.Timeout = TimeSpan.FromSeconds(90);
     http.MaxResponseContentBufferSize = 65536;
-}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
+    if (modelPort is not null && Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_KEY_FILE") is { Length: > 0 } file)
+        http.DefaultRequestHeaders.Authorization = new("Bearer", File.ReadAllText(file).Trim());
+}).RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false });
 
 var app = builder.Build();
 using var metrics = new Meter("InterviewPrep.Studio");
@@ -123,6 +125,7 @@ app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = "local-pract
 app.MapGet("/readyz", async (PracticeDb db, CancellationToken ct) => await db.Database.CanConnectAsync(ct)
     ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 WorkspaceApi.Map(app, modelPort is not null);
+ChatModule.Map(app);
 Preparation.Map(app);
 LiveGuide.Map(app);
 PracticeSpeech.Map(app, speechPort is not null);

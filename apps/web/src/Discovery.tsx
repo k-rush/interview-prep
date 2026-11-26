@@ -184,20 +184,20 @@ function PairReview({ id, data, act, busy, close }: { id: string; data: Workspac
   </section>;
 }
 
-export function Discovery({ data, act, busy }: { data: Workspace; act: Act; busy: boolean }) {
+export function Discovery({ data, act, busy, digestId }: { data: Workspace; act: Act; busy: boolean; digestId?: string }) {
   const [state, setState] = useState<{ data: Workspace; scout: Scout } | null>(null);
   const [error, setError] = useState(""), [opened, setOpened] = useState<string | null>(null), [refresh, setRefresh] = useState(0);
   const reviewRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let active = true, seq = 0;
-    const load = () => { const n = ++seq; api<Scout>("discovery").then(scout => {
+    const load = () => { const n = ++seq; api<Scout>(digestId ? `discovery?digestId=${encodeURIComponent(digestId)}` : "discovery").then(scout => {
       if (active && seq === n) { setState({ data, scout }); setError(""); }
     }).catch(e => { if (active && seq === n) { setState(null); setError(e.message); } }); };
     const visible = () => { if (!document.hidden) load(); };
     const unlisten = listenChanges(load);
     load(); window.addEventListener("focus", load); const timer = window.setInterval(visible, 60000);
     return () => { active = false; unlisten(); window.clearInterval(timer); window.removeEventListener("focus", load); };
-  }, [data, refresh]);
+  }, [data, refresh, digestId]);
   const save: Save = (path, method, body) => {
     setOpened(null); void act(async () => { await api(`discovery/${path}`, method, body); notifyDiscovery(); setRefresh(n => n + 1); });
   };
@@ -208,14 +208,14 @@ export function Discovery({ data, act, busy }: { data: Workspace; act: Act; busy
     location.hash = `workspace/prep/${target.id}`;
   });
   const scout = state?.data === data ? state.scout : null;
-  return <><p className="eyebrow">Discovery / in-app inbox</p><h2>Job scout</h2>
-    <p className="intro">Find a few roles worth checking, then decide what to do. Nothing here applies for a job or contacts an employer.</p>
+  return <>{!digestId && <><a href="#workspace">Back to Chat</a><p className="eyebrow">Scout settings</p><h1>Job scout</h1>
+    <p className="intro">Choose sources and set up daily reports. Nothing is sent to employers.</p></>}
     {error && <p role="alert">{error} <button className="quiet" onClick={() => setRefresh(n => n + 1)}>Retry</button></p>}
     {!scout ? !error && <p role="status">Loading your scout…</p> : <div inert={busy} aria-busy={busy}>
       {!scout.scoutAllowed && <p className="callout">Your plan does not currently permit new scouting. You can still review existing digests and approved exports.</p>}
-      <Schedule key={JSON.stringify(scout.settings)} s={scout.settings} allowed={scout.scoutAllowed} save={save} busy={busy}/>
-      <Sources scout={scout} busy={busy} save={save}/>
-      <section><h3>Daily digests</h3><p>Up to three new matches per day. Reasons use your current permitted evidence, not hidden profile data.</p>
+      {!digestId && <><Schedule key={JSON.stringify(scout.settings)} s={scout.settings} allowed={scout.scoutAllowed} save={save} busy={busy}/>
+      <Sources scout={scout} busy={busy} save={save}/></>}
+      <section><h3>{digestId ? "Listings and application materials" : "Daily digests"}</h3><p>Up to three new matches per day. Reasons use your current permitted evidence, not hidden profile data.</p>
         {!scout.digests.length && <p>No digest yet. Save a target role, add a private listing or permitted board, then run the scout.</p>}
         {scout.digests.map((d, i) => <details className="item" key={d.id} open={i === 0}><summary>{d.localDate} · {d.matches.length} match(es) · {d.status}</summary>
           <p>{d.targetRole} · {d.zone} · {d.trigger} run</p>

@@ -49,8 +49,9 @@ public static class WorkspaceApi
             var facts = await db.Facts.AsNoTracking().Where(f => f.WorkspaceId == owner).OrderBy(f => f.Project)
                 .Select(f => new { f.Id, f.Project, f.Source, f.Claim, f.Confirmed, f.AllowDrafts, f.AllowLive, f.Origin }).ToListAsync();
             var mocks = await db.Mocks.AsNoTracking().Where(m => m.WorkspaceId == owner).OrderByDescending(m => m.StartedAt).ToListAsync();
+            var chatIds = (await db.Set<ChatSession>().Where(s => s.WorkspaceId == owner && s.Kind == "mock").Select(s => s.Id).ToListAsync()).ToHashSet();
             return Results.Ok(new { facts, probes = Practice.Probes, localCoachEnabled, mocks = mocks.Select(m =>
-                new { m.Id, m.Target, m.TargetId, m.Rubric, startedAt = DateTime.SpecifyKind(m.StartedAt, DateTimeKind.Utc),
+                new { m.Id, m.Target, m.TargetId, chatSession = chatIds.Contains(m.Id), m.Rubric, startedAt = DateTime.SpecifyKind(m.StartedAt, DateTimeKind.Utc),
                     completedAt = m.CompletedAt is DateTime d ? (DateTime?)DateTime.SpecifyKind(d, DateTimeKind.Utc) : null, m.Tailored, m.Adaptive,
                     questions = m.Questions(), answers = m.Answers(), report = m.Report(), m.Retry }) });
         });
@@ -156,10 +157,8 @@ public static class WorkspaceApi
             var owner = Owner(c);
             await using var tx = await db.Database.BeginTransactionAsync(c.RequestAborted);
             if (!await db.Mocks.AnyAsync(m => m.WorkspaceId == owner && m.Id == id)) return Results.NotFound();
-            await db.Facts.Where(f => f.WorkspaceId == owner && f.SourceMockId == id).ExecuteDeleteAsync();
-            await db.Set<PrepBlock>().Where(b => b.AttemptId == id && db.Set<PrepSchedule>().Any(s => s.Id == b.ScheduleId && s.WorkspaceId == owner))
-                .ExecuteUpdateAsync(s => s.SetProperty(b => b.AttemptId, (Guid?)null).SetProperty(b => b.State, "skipped"));
-            await db.Mocks.Where(m => m.WorkspaceId == owner && m.Id == id).ExecuteDeleteAsync();
+            await ForgetMock(db, owner, id, c.RequestAborted);
+            await db.Set<ChatSession>().Where(s => s.WorkspaceId == owner && s.Id == id && s.Kind == "mock").ExecuteDeleteAsync(c.RequestAborted);
             await tx.CommitAsync(c.RequestAborted); return Results.NoContent();
         });
         app.MapPost("/api/mocks/{id:guid}/answers", async (Guid id, Answer input, HttpContext c, PracticeDb db, LocalCoach coach) =>
@@ -168,6 +167,8 @@ public static class WorkspaceApi
             if (mock is null) return Results.NotFound();
             if (input.Index is not int index || index < 0 || index >= Practice.Probes.Length || !Valid(input.Text, 3000))
                 return Results.BadRequest("Answer the current question in 1 to 3,000 characters.");
+            if (await db.Set<ChatSession>().AnyAsync(s => s.Id == id && s.WorkspaceId == mock.WorkspaceId))
+                return Results.Conflict("Resume this interview in Chat.");
             var answers = mock.Answers();
             var text = input.Text!.Trim();
             if (index < answers.Length && answers[index] == text) return Results.NoContent();
@@ -196,6 +197,8 @@ public static class WorkspaceApi
             var mock = await Find(db, c, id);
             if (mock is null) return Results.NotFound();
             if (mock.ReportJson is not null) return Results.NoContent();
+            if (await db.Set<ChatSession>().AnyAsync(s => s.Id == id && s.WorkspaceId == mock.WorkspaceId))
+                return Results.Conflict("Chat publishes the scorecard for this interview.");
             var answers = mock.Answers();
             if (answers.Length != Practice.Probes.Length) return Results.Conflict("Finish all four probes before assessing the round.");
             Mark[]? marks;
@@ -232,5 +235,13 @@ public static class WorkspaceApi
             await db.SaveChangesAsync();
             return Results.NoContent();
         });
+    }
+
+    internal static async Task ForgetMock(PracticeDb db, Guid owner, Guid id, CancellationToken ct)
+    {
+        await db.Facts.Where(f => f.WorkspaceId == owner && f.SourceMockId == id).ExecuteDeleteAsync(ct);
+        await db.Set<PrepBlock>().Where(b => b.AttemptId == id && db.Set<PrepSchedule>().Any(s => s.Id == b.ScheduleId && s.WorkspaceId == owner))
+            .ExecuteUpdateAsync(s => s.SetProperty(b => b.AttemptId, (Guid?)null).SetProperty(b => b.State, "skipped"), ct);
+        await db.Mocks.Where(m => m.WorkspaceId == owner && m.Id == id).ExecuteDeleteAsync(ct);
     }
 }

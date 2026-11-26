@@ -71,7 +71,7 @@ export function LandingAccount({ onSignedIn = () => { location.hash = "workspace
 }
 
 const labels: Record<string, string> = { mocks: "Mock starts (includes debrief and retry)", imports: "Evidence imports",
-  builds: "Builder turns", drafts: "Tailored resume and letter pairs", voiceSeconds: "Active voice minutes" };
+  builds: "Experience and planning sessions", drafts: "Tailored resume and letter pairs", voiceSeconds: "Active voice minutes" };
 const day = (unix: number) => new Date(unix * 1000).toLocaleDateString();
 const quantity = (meter: string, units: number) => meter === "voiceSeconds" ? (units / 60).toLocaleString(undefined, { maximumFractionDigits: 1 }) : units;
 

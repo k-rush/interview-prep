@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { api, assessorName, RequestError, values, type Act, type Fact, type Workspace } from "./client";
+import { api, RequestError, values, type Act, type Fact, type Workspace } from "./client";
+import { Chat, ChatHistory } from "./Chat";
 import { Round } from "./Round";
-import { Experience } from "./Experience";
+import { ArchivedConversation, Experience } from "./Experience";
 import { Discovery } from "./Discovery";
 import { Accounts, LandingAccount } from "./Accounts";
 import { LiveGuideView } from "./LiveGuide";
@@ -13,151 +14,87 @@ function Sample() {
   const [pick, setPick] = useState("");
   return <><p className="eyebrow">Fictional sample / browser only</p><h1>Find the missing evidence</h1>
     <section><p>Avery answered the impact question: <q>The rollout went well.</q> Their project notes say that they piloted it with two teams and checked support tickets afterward.</p>
-      <h2>What could Avery add?</h2>
-      <div className="actions"><button onClick={() => setPick("source")}>How they checked the result</button>
+      <h2>What could Avery add?</h2><div className="actions"><button onClick={() => setPick("source")}>How they checked the result</button>
         <button className="quiet" onClick={() => setPick("invented")}>An estimated percentage improvement</button></div>
       {pick && <div role="status" className="callout"><strong>{pick === "source" ? "Use the observation." : "A number needs evidence."}</strong>
-        <p>Checking tickets explains how Avery looked for impact. It does not establish that tickets decreased. The original answer gets no credit for notes Avery didn't mention.</p>
-        <button className="quiet" onClick={() => setPick("")}>Reset sample</button></div>}
-    </section><a href="#">Back to start</a></>;
+        <p>Checking tickets explains how Avery looked for impact. It does not establish that tickets decreased.</p>
+        <button className="quiet" onClick={() => setPick("")}>Reset sample</button></div>}</section><a href="#">Back to start</a></>;
 }
 
 function Home() {
-  const [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  return <><p className="eyebrow">Practice studio / local alpha</p><h1>Prepare with your own evidence.</h1>
-    <p className="intro">Build your experience library, plan for an interview, practice the round and find roles that fit your evidence.</p>
-    <section><h2>Start without an account or card</h2>
-      <p>The sample stays in this tab. Your local workspace saves on this computer and reopens in this browser. It is not a signed-in cloud account. Use non-confidential examples on a shared device.</p>
-      <div className="actions"><a className="button quiet" href="#sample">Try a fictional sample</a>
-        <button disabled={busy} onClick={async () => {
-          setBusy(true); try { await api("workspace", "POST"); location.hash = "workspace"; }
-          catch (e) { setError(String(e)); } finally { setBusy(false); }
-        }}>Open my local workspace</button></div>
-      {error && <p role="alert">{error}</p>}
-    </section><section><h2>Use a verified account</h2><p>On a configured installation, sign in with an email link to use the Free plan or review Prep allowances. No card or automatic upgrade.</p>
-      <a href="#signin">Sign in or check availability</a></section></>;
+  const [error,setError] = useState(""), [busy,setBusy] = useState(false);
+  return <div className="welcome"><p className="eyebrow"><span className="status-dot"/> Private interview studio</p>
+    <h1>Your experience.<br/>Your next interview.</h1><p className="intro">Build your story, rehearse the hard questions, and make a plan with a coach who remembers your work.</p>
+    <div className="actions"><button disabled={busy} onClick={async () => {
+      setBusy(true); try { await api("workspace","POST"); location.hash = "workspace"; } catch(e) {setError(String(e));} finally {setBusy(false);}
+    }}>Open my local workspace</button><a className="button quiet" href="#sample">Try a fictional sample</a></div>
+    {error && <p role="alert">{error}</p>}<p className="privacy-line">No card. Saved in this browser’s workspace on this computer. Use non-confidential examples on a shared device.</p>
+    <a className="minor-link" href="#signin">Sign in with a verified account</a></div>;
 }
 
 function Evidence({ fact, act, busy }: { fact: Fact; act: Act; busy: boolean }) {
-  const notify = () => { if(typeof BroadcastChannel!=="undefined"){const ch=new BroadcastChannel("practice-library");ch.postMessage("changed");ch.close();}};
-  const editor = <form onSubmit={e => {
-    e.preventDefault(); const body = values(e.currentTarget);
-    void act(async () => {await api(`evidence/${fact.id}/confirm`, "POST", {claim:body.claim,allowDrafts:body.drafts==="on",allowLive:body.live==="on"});notify();});
-  }}>
-    <p>Original statement:</p><blockquote>{fact.source}</blockquote>
-    <label>Statement to keep<textarea name="claim" required maxLength={2000} defaultValue={fact.claim} /></label>
-    <label><input type="checkbox" name="drafts" defaultChecked={fact.allowDrafts} /> May use this fact in resumes and cover letters</label>
-    <label><input type="checkbox" name="live" defaultChecked={fact.allowLive} /> May use a separately approved project label in live reminders</label>
+  const notify = () => { if (typeof BroadcastChannel !== "undefined") {const ch = new BroadcastChannel("practice-library");ch.postMessage("changed");ch.close();} };
+  const editor = <form onSubmit={e => { e.preventDefault(); const v = values(e.currentTarget);
+    void act(async () => {await api(`evidence/${fact.id}/confirm`,"POST",{claim:v.claim,allowDrafts:v.drafts==="on",allowLive:v.live==="on"});notify();});
+  }}><p>Original statement:</p><blockquote>{fact.source}</blockquote>
+    <label>Statement to keep<textarea name="claim" required maxLength={2000} defaultValue={fact.claim}/></label>
+    <label><input type="checkbox" name="drafts" defaultChecked={fact.allowDrafts}/> May use this fact in resumes and cover letters</label>
+    <label><input type="checkbox" name="live" defaultChecked={fact.allowLive}/> May use a separately approved project label in live reminders</label>
     <div className="actions"><button disabled={busy}>{fact.confirmed ? "Save correction" : "Confirm fact"}</button>
-      <button type="button" className="quiet" disabled={busy} onClick={() => void act(async()=>{await api(`evidence/${fact.id}`, "DELETE");notify();})}>
-        {fact.confirmed ? "Forget fact" : "Discard proposal"}</button></div>
-  </form>;
+      <button type="button" className="quiet" disabled={busy} onClick={() => void act(async () => {await api(`evidence/${fact.id}`,"DELETE");notify();})}>
+        {fact.confirmed ? "Forget fact" : "Discard proposal"}</button></div></form>;
   return <article className="item"><p className="eyebrow">{fact.confirmed ? "Confirmed" : "Needs your review"} / {fact.origin}</p><h3>{fact.project}</h3>
     {fact.confirmed ? <><p>{fact.claim}</p><details><summary>Edit or forget this fact</summary>{editor}</details></> : editor}</article>;
 }
 
-function Today({data}:{data:Workspace}) {
-  type Summary={next:{role:string;label:string;targetId:string;attemptId:string|null;startsAt:string}|null;digest:{localDate:string;status:string;nextStep:string}|null};
-  const [summary,setSummary]=useState<Summary|null>(null);
-  useEffect(()=>{let active=true;api<Summary>("today").then(result=>{if(active)setSummary(result);}).catch(()=>{});
-    return ()=>{active=false;};},[data]);
-  const unfinished=data.mocks.find(m=>!m.report), proposals=data.facts.filter(f=>!f.confirmed).length;
-  return <section><h2>What to do next</h2>
-    {summary?.next && <p><strong>{summary.next.label}</strong> for {summary.next.role}: {new Date(summary.next.startsAt).toLocaleString()}.{" "}
-      <a href={`#workspace/${summary.next.attemptId ?? `prep/${summary.next.targetId}`}`}>Open scheduled practice</a></p>}
-    {unfinished && <p><a href={`#workspace/${unfinished.id}`}>Continue your unfinished round</a> ({unfinished.answers.length} of 4 answers saved).</p>}
-    {proposals>0 && <p><a href="#workspace/library">Review {proposals} proposed experience {proposals===1?"statement":"statements"}</a> before using them elsewhere.</p>}
-    {summary?.digest && <p><a href="#workspace/jobs">Scout digest for {summary.digest.localDate}</a>: {summary.digest.status}. {summary.digest.nextStep}</p>}
-    {!summary?.next && !unfinished && !proposals && !summary?.digest && <p>Start with <a href="#workspace/library">one project you know well</a>, then <a href="#workspace/prep">set the target for your first round</a>.</p>}
-  </section>;
+function Icon({ kind }: { kind: string }) {
+  const paths: Record<string,string> = {library:"M3 7h7l2 2h9v10H3z M3 7V5h7l2 2h8",chat:"M4 4h16v12H9l-5 4z M8 9h8 M8 12h5",
+    prep:"M4 6h16v14H4z M8 3v5 M16 3v5 M4 10h16 M8 14h3"};
+  return <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind]}/></svg>;
 }
 
-function Studio({ id, targetId }: { id?: string; targetId?: string }) {
-  const [data, setData] = useState<Workspace | null>(null);
-  const [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  const locked = useRef(false);
-  const requestId = useRef(crypto.randomUUID());
-  useEffect(() => {
-    let active = true;
-    api<Workspace>("workspace").then(d => { if (active) setData(d); }).catch(e => { if (active) setError(e.message); });
-    return () => { active = false; };
-  }, []);
+function Studio({ page = "chat", id }: { page?: string; id?: string }) {
+  const [data,setData] = useState<Workspace | null>(null), [error,setError] = useState(""), [busy,setBusy] = useState(false);
+  const locked = useRef(false), lastChat = useRef("#workspace");
+  useEffect(() => { let active = true; api<Workspace>("workspace").then(d => { if (active) setData(d); }).catch(e => { if (active) setError(e.message); });
+    return () => {active=false;}; }, []);
+  useEffect(() => { if (page === "chat") lastChat.current = id ? `#workspace/chat/${id}` : "#workspace"; }, [page,id]);
   const act: Act = async action => {
     if (locked.current) return;
     locked.current = true; setBusy(true); setError("");
     try { await action(); if (location.hash.startsWith("#workspace")) setData(await api<Workspace>("workspace")); }
-    catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save. Try again.");
-      if(e instanceof RequestError && e.status===409 && location.hash.startsWith("#workspace"))
-        await api<Workspace>("workspace").then(setData).catch(()=>{});
-    }
-    finally { locked.current = false; setBusy(false); }
+    catch(e) {setError(e instanceof Error ? e.message : "Could not save. Try again.");
+      if (e instanceof RequestError && e.status === 409) await api<Workspace>("workspace").then(setData).catch(()=>{});}
+    finally {locked.current = false; setBusy(false);}
   };
-  const mock = data?.mocks.find(m => m.id === id);
-  const tools = data && {data,act,busy};
-  const pages = {"library":"Experience builder","prep":"Targets & schedule","live":"Live reminders","jobs":"Job scout","account":"Account & usage"};
-  return <>{error && <p className="error" role="alert">{error}</p>}{busy && <p role="status">Saving&hellip;</p>}
-    {data && <nav aria-label="Workspace sections"><a href="#workspace" aria-current={!id?"page":undefined}>My practice</a>
-      {Object.entries(pages).map(([key,name])=><a key={key} href={`#workspace/${key}`} aria-current={id===key?"page":undefined}>{name}</a>)}</nav>}
-    {!data ? <p>{error ? <a href="#">Return home</a> : "Opening workspace..."}</p> :
-      id==="library" && tools ? <><Experience {...tools}/><section><h2>Review and edit your facts</h2>{data.facts.map(f=><Evidence key={`${f.id}-${f.confirmed}-${f.claim}`} fact={f} act={act} busy={busy}/>)}</section></> :
-      id==="prep" && tools ? <PreparationView key={targetId} {...tools} initialTarget={targetId}/> : id==="live" && tools ? <LiveGuideView {...tools}/> :
-      id==="jobs" && tools ? <Discovery {...tools}/> : id==="account" && tools ? <Accounts {...tools}/> :
-      id ? (mock ? <Round key={id} mock={mock} data={data} act={act} busy={busy} /> :
-        <p>No such attempt in this workspace. <a href="#workspace">Back to workspace</a></p>) :
-      <><p className="eyebrow">Interview preparation studio</p><h1>My practice</h1>
-        <Today data={data}/>
-        <section><h2>My experience</h2><p>What did you personally do on a project? Name your action or decision. Add an observed result if you know it.</p>
-          <form onSubmit={e => {
-            e.preventDefault(); const form = e.currentTarget, body = values(form);
-            void act(async () => { await api("evidence", "POST", body); form.reset(); });
-          }}>
-            <label>Project name<input name="project" required maxLength={100} /></label>
-            <label>Your statement<textarea name="statement" required maxLength={2000} /></label>
-            <button disabled={busy}>Review proposed fact</button>
-          </form>
-          {data.facts.map(f => <Evidence key={`${f.id}-${f.confirmed}-${f.claim}`} fact={f} act={act} busy={busy} />)}
-        </section>
-        <section><h2>Practice a round</h2><p>Four behavioral questions. No hints during the round. A project is helpful, not required.</p>
-          <form onSubmit={e => {
-            e.preventDefault(); const body = values(e.currentTarget);
-            void act(async () => {
-              const m = await api<{ id: string }>("mocks", "POST", { target: body.target, tailor: body.tailor === "on",requestId:requestId.current });
-              requestId.current=crypto.randomUUID();
-              location.hash = `workspace/${m.id}`;
-            });
-          }}>
-            <label>Role or short job description<textarea name="target" required maxLength={2000} /></label>
-            {data.localCoachEnabled && <label><input type="checkbox" name="tailor" /> Use the local model to tailor the questions. Sends only this role or job description.</label>}
-            <button disabled={busy}>Start text mock</button>
-          </form>
-          {data.mocks.map(m => <div className="item" key={m.id}><strong>{m.target}</strong>
-            <p>{new Date(m.startedAt).toLocaleDateString()} &middot; {m.report ? `${m.report.score}/100 (${m.report.grade}) / ${assessorName(m.report.assessor)}` : `${m.answers.length}/4 answers saved`}</p>
-            <a href={`#workspace/${m.id}`}>{m.report ? "View debrief" : "Resume mock"}</a></div>)}
-        </section>
-        <details><summary>Workspace privacy and deletion</summary><p>A local browser workspace expires in 30 days. Deleting a workspace removes its library, plans, scout inbox and practice history. A verified account requires a recent sign-in and cancellation of any test renewal first.</p>
-          <button className="quiet" disabled={busy} onClick={() => {
-            if (window.confirm("Permanently delete this local workspace and all its practice records?"))
-              void act(async () => { await api("workspace", "DELETE"); location.hash = ""; });
-          }}>Delete my workspace</button></details>
-      </>}
+  if (!data) return <p role={error?"alert":"status"}>{error || "Opening your workspace…"} {error && <a href="#">Return home</a>}</p>;
+  const props = {data,act,busy}, active = page === "library" ? "library" : page === "prep" || page === "live" ? "prep" : "chat";
+  const mock = data.mocks.find(m => m.id === (page === "debrief" ? id : page));
+  return <>{error && <p role="alert" className="error">{error}</p>}
+    <nav aria-label="Workspace sections" className="tabs">{[["library","Job experience","#workspace/library"],["chat","Chat",lastChat.current],["prep","Schedule","#workspace/prep"]].map(([k,label,url]) =>
+      <a key={k} aria-current={active === k ? "page" : undefined} href={url}><Icon kind={k}/>{label}</a>)}</nav>
+    {page === "library" ? <><Experience {...props}/>{data.facts.length > 0 && <section><h2>Review your statements</h2>
+      {data.facts.map(f => <Evidence key={`${f.id}-${f.confirmed}-${f.claim}`} fact={f} act={act} busy={busy}/>)}</section>}</> :
+      page === "prep" ? <PreparationView {...props} key={id} initialTarget={id}/> : page === "live" ? <LiveGuideView {...props}/> :
+      page === "jobs" ? <Discovery {...props}/> : page === "history" ? <ChatHistory {...props}/> :
+      page === "archive" && id ? <ArchivedConversation key={id} id={id} act={act} busy={busy}/> :
+      page === "account" ? <><Accounts {...props}/><details><summary>Workspace privacy and deletion</summary>
+        <p>Deleting this workspace removes its library, chats, notes, plans, scout inbox and practice history. Local browser workspaces expire after 30 days.</p>
+        <button className="quiet" disabled={busy} onClick={() => {if(confirm("Permanently delete this workspace and all its records?"))
+          void act(async () => {await api("workspace","DELETE");location.hash="";});}}>Delete my workspace</button></details></> :
+      mock ? (mock.chatSession && page !== "debrief" ? <Chat key={mock.id} {...props} id={mock.id}/> : <Round key={mock.id} mock={mock} {...props}/>) :
+      page === "chat" || page === "new" ? <Chat key={`${page}-${id ?? ""}`} {...props} id={page === "chat" ? id : undefined} newKind={page === "new" ? id : undefined}/> :
+      <p>Page not found. <a href="#workspace">Open Chat</a></p>}
   </>;
 }
 
 function App() {
-  const [hash, setHash] = useState(()=>{
-    const query=new URLSearchParams(location.search);
-    return query.get("mode")==="signIn" || query.has("link") ? "#signin" : location.hash;
-  });
-  useEffect(() => {
-    const changed = () => { setHash(location.hash); window.scrollTo(0, 0); };
-    addEventListener("hashchange", changed); return () => removeEventListener("hashchange", changed);
-  }, []);
-  const [page, id, targetId] = hash.slice(1).split("/");
-  return <><header><a href="#">Interview Prep</a><span>Practice studio</span></header><main>
-    {page === "workspace" ? <Studio id={id} targetId={targetId} /> : page === "sample" ? <Sample /> :
-      page === "signin" ? <><a href="#">Back to start</a><h1>Account sign-in</h1><LandingAccount/></> : <Home />}
-  </main></>;
+  const [hash,setHash] = useState(() => { const q = new URLSearchParams(location.search);return q.get("mode")==="signIn" || q.has("link") ? "#signin" : location.hash; });
+  useEffect(() => { const changed = () => {setHash(location.hash);window.scrollTo(0,0);}; addEventListener("hashchange",changed);return () => removeEventListener("hashchange",changed);},[]);
+  const [root,page,id] = hash.slice(1).split("/"), studio = root === "workspace";
+  return <><header><a className="brand" href={studio ? "#workspace" : "#"}><span className="brand-mark" aria-hidden="true">i.</span>Interview Prep</a>
+    {studio ? <a className="account-link" href="#workspace/account">Account</a> : <span className="edition">Practice studio</span>}</header>
+    <main className={studio ? "workspace" : ""}>{studio ? <Studio page={page} id={id}/> : root === "sample" ? <Sample/> :
+      root === "signin" ? <><a href="#">Back to start</a><h1>Account sign-in</h1><LandingAccount/></> : <Home/>}</main></>;
 }
-
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<App/>);

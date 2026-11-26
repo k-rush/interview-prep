@@ -66,5 +66,6 @@ public sealed class PracticeDb(DbContextOptions<PracticeDb> options) : DbContext
         ExperienceModule.Configure(model);
         DiscoveryModule.Configure(model);
         AccountsModule.Configure(model);
+        ChatModule.Configure(model);
     }
 }

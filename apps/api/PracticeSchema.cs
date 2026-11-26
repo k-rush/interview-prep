@@ -19,8 +19,8 @@ public static class PracticeSchema
             return scalar ? await cmd.ExecuteScalarAsync() : await cmd.ExecuteNonQueryAsync();
         }
         var version = Convert.ToInt32(await Query("PRAGMA user_version", true));
-        if (version > 3) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
-        if (version < 3)
+        if (version > 4) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
+        if (version < 4)
         {
             var existing = Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Facts'", true)) == 1;
             if (existing && version < 2)
@@ -38,13 +38,16 @@ public static class PracticeSchema
             }
             if (existing && Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('Mocks') WHERE name='StartKey'", true)) == 0)
                 await Query("ALTER TABLE Mocks ADD COLUMN StartKey TEXT NULL");
+            if (Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='InterviewTarget'", true)) == 1 &&
+                Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('InterviewTarget') WHERE name='InterviewAt'", true)) == 0)
+                await Query("ALTER TABLE InterviewTarget ADD COLUMN InterviewAt TEXT NULL; ALTER TABLE InterviewTarget ADD COLUMN InterviewZone TEXT NULL;");
             // Only EF-generated table/index declarations are replayed, never candidate data.
             var schema = db.Database.GenerateCreateScript()
                 .Replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", StringComparison.Ordinal)
                 .Replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ", StringComparison.Ordinal)
                 .Replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", StringComparison.Ordinal);
             await Query(schema);
-            await Query("PRAGMA user_version=3");
+            await Query("PRAGMA user_version=4");
         }
         await tx.CommitAsync();
         await db.Database.CloseConnectionAsync();

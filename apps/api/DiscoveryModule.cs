@@ -41,7 +41,7 @@ public static partial class DiscoveryModule
     public static void Map(WebApplication app)
     {
         var g = app.MapGroup("/api/discovery");
-        g.MapGet("", (DiscoveryScout scout, HttpContext c) => scout.State(Owner(c), c.RequestAborted));
+        g.MapGet("", (Guid? digestId, DiscoveryScout scout, HttpContext c) => scout.State(Owner(c), c.RequestAborted, digestId));
         g.MapPost("/run", (DiscoveryScout scout, HttpContext c) => scout.Run(Owner(c), false, c.RequestAborted));
         g.MapPut("/settings", async (Preferences input, HttpContext c, PracticeDb db, TimeProvider clock) =>
         {

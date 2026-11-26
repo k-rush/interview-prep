@@ -64,12 +64,13 @@ public sealed class LocalCoach(HttpClient http)
         return text?.Trim() is { Length: > 8 and <= 300 } q && q.EndsWith('?') ? q : null;
     }
 
-    public async Task<T?> Call<T>(string instruction, object packet, string property, CancellationToken ct) where T : class
+    public async Task<T?> Call<T>(string instruction, object packet, string? property, CancellationToken ct, int maxTokens = 1000) where T : class
     {
         var request = new
         {
             messages = new[] { new { role = "system", content = instruction }, new { role = "user", content = JsonSerializer.Serialize(packet) } },
-            temperature = 0, max_tokens = 1000, response_format = new { type = "json_object" }
+            model = Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_ID") ?? "local",
+            temperature = 0, max_tokens = maxTokens, response_format = new { type = "json_object" }
         };
         try
         {
@@ -79,7 +80,7 @@ public sealed class LocalCoach(HttpClient http)
             var content = envelope.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
             if (content is null) return null;
             using var body = JsonDocument.Parse(content);
-            return body.RootElement.GetProperty(property).Deserialize<T>(Json);
+            return (property is null ? body.RootElement : body.RootElement.GetProperty(property)).Deserialize<T>(Json);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException
             or IndexOutOfRangeException || (ex is OperationCanceledException && !ct.IsCancellationRequested))

@@ -20,7 +20,7 @@ test('a candidate can plan a round, open an approved manual reminder, and declin
   });
   await page.goto(app.url);await page.getByRole('button',{name:'Open my local workspace'}).click();
   const tab=name=>page.getByRole('navigation',{name:'Workspace sections'}).getByRole('link',{name,exact:true}).click();
-  await tab('Targets & schedule');
+  await tab('Schedule');await page.getByText('Add an interview target',{exact:true}).click();
   await page.getByLabel('Target role').fill('Platform engineering');await page.getByLabel('Public company name').fill('Amazon');
   await page.getByLabel('Job description or goal').fill('Improve release reliability.');
   await page.getByRole('button',{name:'Save target'}).click();
@@ -33,7 +33,7 @@ test('a candidate can plan a round, open an approved manual reminder, and declin
   await page.getByRole('button',{name:'Preview schedule'}).click();
   await page.getByRole('button',{name:'Confirm schedule'}).click();
   await page.getByRole('button',{name:'Export calendar with reminders'}).waitFor();
-  await tab('Live reminders');
+  await page.getByRole('link',{name:'Live reminders',exact:true}).click();
   await page.getByLabel('I approve these exact cards').check();
   await page.getByRole('button',{name:'Save approved deck'}).click();
   await page.getByLabel('Notes and this guide are permitted').check();
@@ -42,12 +42,13 @@ test('a candidate can plan a round, open an approved manual reminder, and declin
   await page.getByRole('button',{name:'Covered'}).click();await page.getByText('No remaining cue.').waitFor();
   await page.getByRole('button',{name:'End guide'}).click();
   assert.deepEqual(speechRequests,[]);
-  await tab('Targets & schedule');
+  await tab('Schedule');
   await page.getByRole('button',{name:'Start scheduled mock'}).first().click();
-  await page.getByLabel('Your answer',{exact:true}).fill('I built the release rehearsal.');
+  await page.getByLabel('Message your coach',{exact:true}).fill('I built the release rehearsal.');
+  await page.getByText('Voice options',{exact:true}).click();
   await page.getByRole('button',{name:'Dictate locally'}).click();
   await page.getByText(/No on-device English speech pack/).waitFor();
-  assert.equal(await page.getByLabel('Your answer',{exact:true}).inputValue(),'I built the release rehearsal.');
+  assert.equal(await page.getByLabel('Message your coach',{exact:true}).inputValue(),'I built the release rehearsal.');
   assert.equal(await page.evaluate(()=>window.micStarts),0);
   assert.ok(!speechRequests.includes('/api/speech/transcribe'));
   assert.deepEqual(remote,[]);assert.deepEqual(errors,[]);
