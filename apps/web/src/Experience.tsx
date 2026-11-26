@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, values, type Act, type Fact, type Workspace } from "./client";
-import { DocumentPreview } from "./ExperienceDocuments";
+import { DocumentImport } from "./ExperienceDocuments";
 
 type Node = { id: string; kind: "role" | "project" | "situation"; label: string; employer: string; dates: string; parentRoleId: string | null; revision: number };
-type Source = { id: string; category: string; title: string; url: string | null; nodeId: string | null; createdAt: string };
+type Source = { id: string; category: string; title: string; description: string | null; url: string | null; nodeId: string | null; createdAt: string };
 type Builder = { id: string; goal: string; minutes: number | null; stage: string; state: string; revision: number; useModel: boolean };
 type Citation = { id: string; factId: string; nodeId: string | null; sourceId: string | null; turnId: string | null; location: string; attributedExcerpt: string };
 type Library = { nodes: Node[]; sources: Source[]; builders: Builder[]; citations: Citation[] };
@@ -11,7 +11,7 @@ type Turn = { id: string; seq: number; stage: string; speaker: string; mode: str
 type Transcript = { session: Builder & { roleId: string | null; projectId: string | null }; turns: Turn[] };
 type Props = { data: Workspace; act: Act; busy: boolean };
 type ActionProps = { change: Act; busy: boolean };
-const categories: Record<string, string> = { resume: "Resume", "performance-review": "Performance review", referral: "Written referral or recommendation",
+const categories: Record<string, string> = { document: "Document", resume: "Resume", "performance-review": "Performance review", referral: "Written referral or recommendation",
   email: "Email correspondence", "linkedin-export": "My LinkedIn profile or export", "project-bookmark": "Project bookmark", "project-write-up": "Project documentation", "work-sample": "Work sample" };
 const nameOf = (nodes: Node[], id: string | null) => nodes.find(n => n.id === id)?.label ?? "Unfiled";
 
@@ -31,10 +31,9 @@ export function Experience({ data, act, busy }: Props) {
     <p className="intro">Keep the stories behind your resume. Bring a document, link a profile, or <a href="#workspace/new/builder">talk it through in Chat</a>.</p>
     {error && <p role="alert">{error}</p>}
     {!library ? <p role="status">{error ? "Unable to open the library." : "Opening your library…"}</p> : <>
-      <section><details><summary>Import a document or link</summary><EvidenceImport nodes={library.nodes} change={change} busy={busy} model={data.localCoachEnabled} /></details>
-        <p className="muted">Resume, review, email, LinkedIn export or project notes. Choose exactly which passages to keep.</p></section>
+      <DocumentImport change={change} busy={busy} />
       <section><h2>Jobs, projects &amp; situations</h2>
-        {!library.nodes.length && <p className="muted">Your first role or project will appear here when you describe it in Chat.</p>}
+        {!library.nodes.length && <p className="muted">Drop a document or describe your work in Chat to start your job history.</p>}
         {library.nodes.map(n => {
           const facts = data.facts.filter(f => library.citations.some(c => c.nodeId === n.id && c.factId === f.id));
           return <details key={n.id} className="item"><summary>{n.kind === "role" ? "Role" : n.kind === "project" ? "Project" : "Situation"}: {n.label}</summary>
@@ -51,15 +50,16 @@ export function Experience({ data, act, busy }: Props) {
         })}
       </section>
       {!!library.sources.length && <section><h2>Saved sources</h2>
-        {library.sources.map(s => <details className="item" key={s.id}><summary>{s.title} · {s.category === "chat" ? "Conversation" : categories[s.category]}</summary>
-          <p>{nameOf(library.nodes, s.nodeId)} · Saved {new Date(s.createdAt).toLocaleDateString()}</p>
+        {library.sources.map(s => <details className="item" key={s.id}><summary>{s.title} · {s.category === "chat" ? "Conversation" : categories[s.category]}
+          {s.description && <span className="source-description">AI summary: {s.description}</span>}</summary>
+          <p>{s.nodeId && `${nameOf(library.nodes, s.nodeId)} · `}Saved {new Date(s.createdAt).toLocaleDateString()}</p>
           {s.url && <p>Bookmark only (not fetched): <code>{s.url}</code></p>}
           {library.citations.filter(c => c.sourceId === s.id).map(c => {
             const f = data.facts.find(f => f.id === c.factId);
             return f && <div key={c.id}><strong>{c.location} · {f.confirmed ? "Confirmed" : "Needs review"}</strong><blockquote>{c.attributedExcerpt}</blockquote></div>;
           })}
           <button className="quiet" disabled={busy} onClick={() => {
-            if (window.confirm("Forget this source and all its linked facts, including confirmed ones? Previously downloaded files cannot be recalled."))
+            if (window.confirm("Forget this source, its import chat, and statements originating here? Earlier history it only corroborates is kept. Previously downloaded files cannot be recalled."))
               void change(() => api(`experience/sources/${s.id}`, "DELETE"));
           }}>Forget source and linked facts</button>
         </details>)}
@@ -133,53 +133,6 @@ export function ArchivedConversation({ id, act, busy }: {id: string; act: Act; b
         if (window.confirm("Forget this conversation, its transcript and all its linked facts? Named role/project records remain; you can forget those separately."))
           void act(async () => { await api(path, "DELETE"); location.hash = "workspace/history"; });
       }}>Forget conversation</button></>;
-}
-
-type Excerpt = { text: string; location: string };
-function EvidenceImport({ nodes, change, busy, model }: ActionProps & { nodes: Node[]; model: boolean }) {
-  const [category, setCategory] = useState("resume"), [paste, setPaste] = useState(""), [snips, setSnips] = useState<Excerpt[]>([]);
-  const [message, setMessage] = useState(""), [generation, resetReader] = useState(0);
-  const area = useRef<HTMLTextAreaElement>(null);
-  function add(text: string, location: string) {
-    if (snips.length >= 4 || !text.trim() || text.length > 1600) { setMessage("Select up to four passages of 1–1,600 characters each."); return; }
-    setSnips([...snips, { text: text.trim(), location }]); setMessage("");
-  }
-  return <form onSubmit={e => {
-    e.preventDefault(); const form = e.currentTarget, v = values(form);
-    if (!snips.length && !v.url) { setMessage("Select an excerpt or enter a bookmark before saving."); return; }
-    void change(async () => {
-      await api("experience/sources", "POST", { category, title: v.title, nodeId: v.nodeId || null, url: v.url || null, excerpts: snips,
-        reviewed: v.reviewed === "on", useModel: v.model === "on" && snips.length > 0 });
-      setSnips([]); setPaste(""); setCategory("resume"); resetReader(n => n + 1); form.reset();
-      setMessage("Saved. Review any proposed statements in the fact editor below; none were confirmed.");
-    });
-  }}>
-    <label>Evidence category<select value={category} onChange={e => setCategory(e.target.value)}>
-      {Object.entries(categories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-    </select></label>
-    <label>Private source title<input name="title" required maxLength={120} /></label>
-    <label>File under a role or project<select name="nodeId"><option value="">Unfiled</option>{nodes.map(n => <option key={n.id} value={n.id}>{n.kind}: {n.label}</option>)}</select></label>
-    <label>HTTPS bookmark (never fetched)<input name="url" type="url" required={category === "project-bookmark"} maxLength={1000} /></label>
-    <p className="muted">Save a plain link without credentials or query parameters. For LinkedIn, use your own profile PDF, unzipped CSV export, or paste. A bookmark alone creates no fact.</p>
-    {snips.length < 4 && <><DocumentPreview key={generation} onUse={add} disabled={busy} />
-      <label>Or paste text for a private preview<textarea ref={area} value={paste} maxLength={32_000} onChange={e => setPaste(e.target.value)} rows={4} /></label>
-      <button type="button" className="quiet" disabled={busy || !paste.trim()} onClick={() => {
-        const { selectionStart: start, selectionEnd: end } = area.current!, selected = end > start;
-        const text = selected ? paste.slice(start, end) : paste;
-        add(text, selected ? `Pasted characters ${start + 1}–${end}` : "Pasted excerpt");
-        if (text.trim() && text.length <= 1600) setPaste("");
-      }}>Select pasted passage for redaction</button></>}
-    {snips.map((s, i) => <div key={i} className="item">
-      <label>Source location {i + 1}<input required maxLength={100} value={s.location} onChange={e => setSnips(snips.map((p, k) => k === i ? { ...p, location: e.target.value } : p))} /></label>
-      <label>Selected excerpt {i + 1} (remove names and confidential details)<textarea required maxLength={1600} value={s.text} rows={4}
-        onChange={e => setSnips(snips.map((p, k) => k === i ? { ...p, text: e.target.value } : p))} /></label>
-      <button className="quiet" type="button" onClick={() => setSnips(snips.filter((_, k) => k !== i))}>Remove excerpt {i + 1}</button>
-    </div>)}
-    {model && !!snips.length && <label><input type="checkbox" name="model" defaultChecked/> Let local AI organize these reviewed passages into job, project or situation labels. Review statements before reuse.</label>}
-    <label><input required type="checkbox" name="reviewed" /> I have permission to use this material and reviewed the title, link and excerpts for private information.</label>
-    <p>Only the displayed title, bookmark, and selected excerpts are saved. Reviewers’ opinions remain attributed to the source. Drafts and live reminders are off until you explicitly allow them.</p>
-    <button disabled={busy}>Save reviewed evidence</button>{message && <p role="status">{message}</p>}
-  </form>;
 }
 
 function BaseResume({ data, act, busy }: Props) {

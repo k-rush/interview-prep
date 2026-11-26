@@ -80,30 +80,73 @@ test('local PDF, DOCX and text previews let the candidate select and redact with
   assert.ok(serves.every(([method]) => method === 'GET'), 'preview must read local scripts only, not post any file or excerpt');
 });
 
-test('job experience imports only the reviewed pasted excerpt and opens the conversational builder', async t => {
-  const app = await localHost(t), cookie = await app.open();
-  const browser = await launchBrowser(t), context = await browser.newContext();
+test('dropping a document files its summary and cited history without intake fields; pasted links stay bookmarks', async t => {
+  const model = createServer(async (req, res) => {
+    let body = ''; for await (const part of req) body += part;
+    const { read_attachment } = JSON.parse(JSON.parse(body).messages[1].content);
+    const entries = read_attachment.map(({line, text}) => text.includes('Project Cedar') ? { line, kind:'project', label:'Project Cedar' } :
+      { line, kind:'statement', label:'' });
+    res.writeHead(200, { 'content-type':'application/json' });
+    res.end(JSON.stringify({ choices:[{ message:{ content:JSON.stringify({ description:'Team notes about Project Cedar and its checklist.', careerHistory:false, entries }) } }] }));
+  });
+  model.listen(0, '127.0.0.1'); await once(model, 'listening');
+  t.after(() => new Promise(resolve => {model.close(resolve); model.closeAllConnections();}));
+  const app = await localHost(t, model.address().port), cookie = await app.open();
+  const browser = await launchBrowser(t), context = await browser.newContext({ viewport:{width:390,height:844} });
   const [name, value] = cookie.split('=');
   await context.addCookies([{ name, value, url: app.url }]);
-  const page = await context.newPage(), errors = [];
+  const page = await context.newPage(), errors = [], uploads = [], outside = [];
   page.on('pageerror', e => errors.push(e.message));
-  await page.route('**/*', route => new URL(route.request().url()).origin === app.url ? route.continue() : route.abort());
+  await page.route('**/*', route => {
+    const url = new URL(route.request().url());
+    if (url.origin !== app.url) { outside.push(url.origin); return route.abort(); }
+    if (url.pathname === '/api/experience/documents') uploads.push(route.request().postDataJSON());
+    return route.continue();
+  });
   await page.goto(`${app.url}/#workspace/library`);
-  await page.getByText('Import a document or link',{exact:true}).click();
-  await page.getByLabel('Evidence category').selectOption('performance-review');
-  await page.getByLabel('Private source title').fill('Sample assessment');
-  await page.getByLabel('Or paste text for a private preview').fill('Synthetic Name: our team reviewed the plan.');
-  await page.getByRole('button', { name: 'Select pasted passage for redaction' }).click();
-  await page.getByLabel('Selected excerpt 1 (remove names and confidential details)').fill('Our team reviewed the plan.');
-  await page.getByLabel('I have permission to use this material', { exact: false }).check();
-  await page.getByRole('button', { name: 'Save reviewed evidence' }).click();
-  await page.getByText(/Saved\. Review any proposed statements/).waitFor();
+  const zone = page.getByRole('region', {name:'Import experience'});
+  await zone.getByRole('button',{name:'Choose file',exact:true}).waitFor();
+  assert.equal(await zone.locator('select, input[required], textarea[required]').count(), 0);
+  await zone.locator('input[type=file]').setInputFiles({name:'old.doc',mimeType:'application/msword',buffer:Buffer.from('unsupported')});
+  await zone.getByRole('alert').filter({hasText:/paste/i}).waitFor();
+  const main = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+    '<w:p><w:r><w:t>We designed Project Cedar.</w:t></w:r></w:p><w:p><w:r><w:t>Our team reviewed the checklist.</w:t></w:r></w:p></w:body></w:document>';
+  const zip = zipSync({'word/document.xml':Buffer.from(main), 'word/comments.xml':Buffer.from('Private comment never sent.')});
+  await zone.getByRole('heading', {name:'Drop a document here'}).evaluate((el, bytes) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File([new Uint8Array(bytes)], 'review.docx'));
+    el.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer}));
+  }, Array.from(zip));
+  await page.waitForURL('**/#workspace/chat/*');
+  await page.getByRole('list',{name:'Chat transcript'}).getByText(/I searched your job history/).waitFor();
+  await page.getByRole('link',{name:'Review updated job history'}).click();
+  await page.getByText('AI summary: Team notes about Project Cedar and its checklist.',{exact:true}).waitFor();
+  await page.getByText('Project: Project Cedar',{exact:true}).click();
+  await page.getByText('We designed Project Cedar. (needs review)',{exact:true}).waitFor();
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(uploads[0], {fileName:'review.docx', requestId:uploads[0].requestId, passages:[{location:'Paragraph 1',text:'We designed Project Cedar.'},
+    {location:'Paragraph 2',text:'Our team reviewed the checklist.'}]});
   const { facts } = await app.state(cookie);
-  assert.equal(facts.length, 1);
-  assert.equal(facts[0].confirmed, false);
-  assert.doesNotMatch(facts[0].source, /Synthetic Name/);
-  assert.equal(facts[0].claim, 'Our team reviewed the plan.');
+  assert.equal(facts.length, 2);
+  assert.ok(facts.every(f => !f.confirmed && !f.allowDrafts && !f.allowLive));
+  await page.reload();
+  await page.getByText(/AI summary: Team notes/).waitFor();
+  await zone.getByText('Paste text or a link instead').click();
+  await zone.getByLabel('Document text or bookmark').fill('https://www.linkedin.com/in/synthetic-fixture');
+  await zone.getByRole('button', {name:'Add to Job experience'}).click();
+  await page.getByText('Bookmark saved. The link was not opened.').waitFor();
+  assert.equal(uploads.length, 1);
+  assert.equal((await app.state(cookie)).facts.length, 2);
   await page.getByRole('link',{name:'talk it through in Chat'}).click();
   await page.getByLabel('Message your coach').waitFor();
-  assert.deepEqual(errors, []);
+  const builderUrl=page.url();
+  await page.locator('.chat-page').evaluate(el=>{
+    const dataTransfer=new DataTransfer();dataTransfer.items.add(new File(['Our team reviewed the checklist.'],'followup.txt'));
+    el.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer}));
+  });
+  await page.getByRole('heading',{name:'Import · followup.txt'}).waitFor();
+  await page.getByRole('list',{name:'Chat transcript'}).getByText(/Existing statements supported by this source: 1/).waitFor();
+  assert.notEqual(builderUrl,page.url());
+  assert.equal((await app.state(cookie)).facts.length,2);
+  assert.deepEqual(errors, []); assert.deepEqual(outside, []);
 });

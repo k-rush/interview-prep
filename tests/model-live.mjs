@@ -3,6 +3,28 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { localHost } from './local-host.mjs';
 
+test('local AI describes and files a whole unlabelled document', async t => {
+  const port = process.env.INTERVIEW_PREP_MODEL_PORT;
+  assert.ok(port, 'Connect a local model first');
+  const app = await localHost(t, port, Object.fromEntries(['INTERVIEW_PREP_MODEL_ID','INTERVIEW_PREP_MODEL_KEY_FILE']
+    .filter(k => process.env[k]).map(k => [k, process.env[k]])));
+  const cookie = await app.open();
+  const text = 'I worked as a Platform engineer.\nI designed the rehearsal for Project Atlas.\nI wrote a rollback checklist for the team.';
+  const response = await app.request('experience/documents', cookie, 'POST', { fileName: 'notes.txt', passages: [{location:'Lines 1-3', text}] });
+  assert.equal(response.status, 200, response.ok ? undefined : await response.text());
+  const {id} = await response.json();
+  const run = await app.request(`chats/${id}/import`, cookie, 'POST');
+  assert.equal(run.status, 200, run.ok ? undefined : await run.text());
+  assert.match((await (await app.request(`chats/${id}`,cookie)).json()).messages.at(-1).text,/searched your job history/i);
+  const { nodes, sources, citations } = await (await app.request('experience', cookie)).json();
+  assert.match(sources[0].description, /engineer|Atlas|rehearsal|checklist/i);
+  assert.ok(nodes.some(n => n.kind === 'role' && /engineer/i.test(n.label)));
+  assert.ok(nodes.some(n => n.kind === 'project' && /Atlas/i.test(n.label)));
+  const { facts } = await app.state(cookie);
+  assert.ok(facts.length >= 2 && facts.every(f => text.includes(f.claim) && !f.confirmed && !f.allowDrafts && !f.allowLive));
+  assert.ok(citations.every(c => c.location === 'Lines 1-3' && c.sourceId === sources[0].id));
+});
+
 // Opt-in local hardware smoke, separate from deterministic replay. All inputs and storage are synthetic.
 test('real local model conducts a conversation, asks adaptive probes and returns a cited assessment', async t => {
   const port = process.env.INTERVIEW_PREP_MODEL_PORT;

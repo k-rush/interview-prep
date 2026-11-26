@@ -19,7 +19,7 @@ public static class PracticeSchema
             return scalar ? await cmd.ExecuteScalarAsync() : await cmd.ExecuteNonQueryAsync();
         }
         var version = Convert.ToInt32(await Query("PRAGMA user_version", true));
-        if (version > 4) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
+        if (version > 5) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
         if (version < 4)
         {
             var existing = Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Facts'", true)) == 1;
@@ -47,7 +47,14 @@ public static class PracticeSchema
                 .Replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ", StringComparison.Ordinal)
                 .Replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", StringComparison.Ordinal);
             await Query(schema);
-            await Query("PRAGMA user_version=4");
+        }
+        if (version < 5)
+        {
+            if (Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('ExperienceSource') WHERE name='Description'", true)) == 0)
+                await Query("ALTER TABLE ExperienceSource ADD COLUMN Description TEXT NULL");
+            if (Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('ExperienceCitation') WHERE name='Corroborates'", true)) == 0)
+                await Query("ALTER TABLE ExperienceCitation ADD COLUMN Corroborates INTEGER NOT NULL DEFAULT 0");
+            await Query("PRAGMA user_version=5");
         }
         await tx.CommitAsync();
         await db.Database.CloseConnectionAsync();

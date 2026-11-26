@@ -51,7 +51,13 @@ if (args.Length == 0)
         mock.Answers().Single() != "A saved answer." || mock.ReportJson is not null ||
         (await db.Workspaces.SingleAsync()).TokenHash != "synthetic-token-hash") throw new Exception("Legacy workspace changed.");
     await db.AddAsync(new InterviewTarget { WorkspaceId = fact.WorkspaceId, Role = "Engineering", Round = "Hiring manager", Level = "Senior" });
+    var source = new ExperienceSource { WorkspaceId = fact.WorkspaceId, Category = "resume", Title = "Existing source" };
+    db.Add(source);
     await db.SaveChangesAsync();
+    await db.Database.ExecuteSqlRawAsync("ALTER TABLE ExperienceSource DROP COLUMN Description; ALTER TABLE ExperienceCitation DROP COLUMN Corroborates; PRAGMA user_version=4;");
+    await PracticeSchema.Open(db);
+    var upgraded = await db.Set<ExperienceSource>().AsNoTracking().SingleAsync(s => s.Id == source.Id);
+    if (upgraded.Description is not null || upgraded.Title != source.Title) throw new Exception("Existing source changed during upgrade.");
     await db.Database.ExecuteSqlRawAsync("PRAGMA user_version=9999");
     try { await PracticeSchema.Open(db); throw new Exception("Newer version not rejected."); }
     catch (InvalidOperationException ex) when (ex.Message.Contains("newer studio")) { }

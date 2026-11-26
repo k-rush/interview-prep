@@ -23,6 +23,7 @@ public sealed class ExperienceSource
     public Guid? NodeId { get; set; }
     public required string Category { get; set; }
     public required string Title { get; set; }
+    public string? Description { get; set; }
     public string? Url { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
@@ -63,6 +64,7 @@ public sealed class ExperienceCitation
     public Guid? NodeId { get; set; }
     public Guid? SourceId { get; set; }
     public Guid? TurnId { get; set; }
+    public bool Corroborates { get; set; }
     public required string Location { get; set; }
     public required string AttributedExcerpt { get; set; }
 }
@@ -164,7 +166,7 @@ public static partial class ExperienceModule
             var nodes = await db.Set<ExperienceNode>().Where(n => n.WorkspaceId == owner).OrderBy(n => n.Label)
                 .Select(n => new { n.Id, n.Kind, n.Label, n.Employer, n.Dates, n.ParentRoleId, n.Revision }).ToListAsync(ct);
             var sources = await db.Set<ExperienceSource>().Where(s => s.WorkspaceId == owner).OrderByDescending(s => s.CreatedAt)
-                .Select(s => new { s.Id, s.Category, s.Title, s.NodeId, s.Url, s.CreatedAt }).ToListAsync(ct);
+                .Select(s => new { s.Id, s.Category, s.Title, s.Description, s.NodeId, s.Url, s.CreatedAt }).ToListAsync(ct);
             var builders = await db.Set<ExperienceBuilder>().Where(b => b.WorkspaceId == owner).OrderByDescending(b => b.UpdatedAt)
                 .Select(b => new { b.Id, b.Goal, b.Minutes, b.Stage, b.State, b.Revision, b.UseModel, b.UpdatedAt }).ToListAsync(ct);
             var citations = await db.Set<ExperienceCitation>().Where(e => e.WorkspaceId == owner)
@@ -177,6 +179,7 @@ public static partial class ExperienceModule
             SaveNode(id, input, c, db, ct));
         group.MapDelete("/nodes/{id:guid}", DeleteNode);
         group.MapPost("/sources", Import);
+        group.MapPost("/documents", ImportDocument);
         group.MapPost("/merge", Merge);
         group.MapDelete("/sources/{id:guid}", async (Guid id, HttpContext c, PracticeDb db, CancellationToken ct) =>
         {
@@ -184,7 +187,9 @@ public static partial class ExperienceModule
             await using var tx = await db.Database.BeginTransactionAsync(ct);
             var source = db.Set<ExperienceSource>().Where(s => s.WorkspaceId == owner && s.Id == id);
             if (!await source.AnyAsync(ct)) return Results.NotFound();
+            await PreserveIndependentSupport(db, owner, id, ct);
             await ForgetFacts(db, owner, db.Set<ExperienceCitation>().Where(e => e.SourceId == id), ct);
+            await db.Set<ChatSession>().Where(s => s.WorkspaceId == owner && s.Id == id && s.Kind == "import").ExecuteDeleteAsync(ct);
             await source.ExecuteDeleteAsync(ct);
             await tx.CommitAsync(ct);
             return Results.NoContent();
@@ -237,7 +242,7 @@ public static partial class ExperienceModule
     }
 
     private static Task<int> ForgetFacts(PracticeDb db, Guid owner, IQueryable<ExperienceCitation> selected, CancellationToken ct) =>
-        db.Facts.Where(f => f.WorkspaceId == owner && selected.Any(e => e.WorkspaceId == owner && e.FactId == f.Id)).ExecuteDeleteAsync(ct);
+        db.Facts.Where(f => f.WorkspaceId == owner && selected.Any(e => e.WorkspaceId == owner && e.FactId == f.Id && !e.Corroborates)).ExecuteDeleteAsync(ct);
 
     private static async Task<IResult> DeleteNode(Guid id, HttpContext c, PracticeDb db, CancellationToken ct)
     {
@@ -316,26 +321,14 @@ public static partial class ExperienceModule
             if (node != null && !await db.Set<ExperienceNode>().AnyAsync(n => n.WorkspaceId == owner && n.Id == node.Id, ct))
                 return Results.NotFound();
             db.Add(source);
-            var filed = new Dictionary<(string, string), ExperienceNode>();
-            var nodeCount = await db.Set<ExperienceNode>().CountAsync(n => n.WorkspaceId == owner, ct);
+            var nodes = node is null ? await db.Set<ExperienceNode>().Where(n => n.WorkspaceId == owner).ToListAsync(ct) : [];
             for (var i = 0; i < excerpts.Length; i++)
             {
                 var location = input.Excerpts[i]!.Location!.Trim();
                 var filing = FilingFor(excerpts[i], labels.Length == excerpts.Length ? labels[i] : null);
                 var record = node;
-                if (record is null && filing is { Kind: { } kind, Label: { } label } &&
-                    (kind != "role" || input.Category is "resume" or "linkedin-export") && !string.IsNullOrWhiteSpace(label))
-                {
-                    var k = (kind, label.ToLowerInvariant());
-                    if (!filed.TryGetValue(k, out record))
-                        record = await db.Set<ExperienceNode>().FirstOrDefaultAsync(n => n.WorkspaceId == owner && n.Kind == kind && n.Label.ToLower() == k.Item2, ct);
-                    if (record is null && nodeCount < 200)
-                    {
-                        record = new ExperienceNode { WorkspaceId = owner, Kind = kind, Label = label };
-                        db.Add(record); nodeCount++;
-                    }
-                    if (record is not null) filed[k] = record;
-                }
+                if (record is null && filing is not null && (filing.Kind != "role" || input.Category is "resume" or "linkedin-export"))
+                    record = FileUnder(db, owner, nodes, filing);
                 Propose(db, owner, record?.Id, record?.Label ?? "Unfiled evidence", claims[i],
                     $"{category} · {source.Title} · {location}\n{excerpts[i]}", category, location, source.Id, null);
             }
@@ -350,7 +343,17 @@ public static partial class ExperienceModule
         }
     }
 
-    private static void Propose(PracticeDb db, Guid owner, Guid? node, string label, string claim, string source,
+    private static ExperienceNode? FileUnder(PracticeDb db, Guid owner, List<ExperienceNode> nodes, Filing filing)
+    {
+        var existing = nodes.Find(n => n.Kind == filing.Kind && string.Equals(n.Label, filing.Label, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null || nodes.Count >= 200) return existing;
+        var node = new ExperienceNode { WorkspaceId = owner, Kind = filing.Kind!, Label = filing.Label! };
+        db.Add(node);
+        nodes.Add(node);
+        return node;
+    }
+
+    private static Fact Propose(PracticeDb db, Guid owner, Guid? node, string label, string claim, string source,
         string origin, string location, Guid? sourceId, Guid? turnId)
     {
         var fact = new Fact { WorkspaceId = owner, Project = label, Source = source, Claim = claim,
@@ -358,6 +361,7 @@ public static partial class ExperienceModule
         db.Add(fact);
         db.Add(new ExperienceCitation { WorkspaceId = owner, FactId = fact.Id, NodeId = node,
             SourceId = sourceId, TurnId = turnId, Location = location, AttributedExcerpt = source });
+        return fact;
     }
 
     private static string ReviewedQuote(string passage, string? proposed)

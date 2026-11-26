@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { api, RequestError, type Act, type Workspace } from "./client";
 import { Discovery } from "./Discovery";
 import { VoiceInput } from "./Voice";
+import { DocumentImport } from "./ExperienceDocuments";
 
 type Kind = "builder" | "mock" | "scout" | "plan";
-type Session = { id: string; kind: Kind; title: string; state: string; revision: number; stage: string; updatedAt: string; targetId: string | null; digestId: string | null };
+type Session = { id: string; kind: Kind | "import"; title: string; state: string; revision: number; stage: string; updatedAt: string; targetId: string | null; digestId: string | null };
 type Message = { id: string; speaker: string; text: string; mode: string; vote: string | null; nextChatId: string | null };
 type Detail = { session: Session; messages: Message[]; pendingSearch: string | null };
 type Props = { data: Workspace; act: Act; busy: boolean };
@@ -14,6 +15,7 @@ const modes: Record<Kind, [string, string]> = {
 };
 const date = (s: string) => new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const chatUrl = (id: string) => `#workspace/chat/${id}`;
+const modeName = (kind: Session["kind"]) => kind === "import" ? "Document import" : modes[kind][0];
 
 function Starters({ small = false }: { small?: boolean }) {
   return <div className={small ? "utility-links" : "starters"}>{(Object.entries(modes) as [Kind, [string, string]][]).map(([kind, [title, subtitle]]) =>
@@ -24,6 +26,7 @@ function Starters({ small = false }: { small?: boolean }) {
 export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; newKind?: string }) {
   const [detail, setDetail] = useState<Detail | null>(null), [text, setText] = useState(""), [error, setError] = useState("");
   const [sending, setSending] = useState(false), [recent, setRecent] = useState<Session[]>([]);
+  const [attempt, retry] = useState(0);
   const startKey = useRef(crypto.randomUUID()), turnKey = useRef(crypto.randomUUID());
   const last = useRef<HTMLLIElement>(null), scrollNext = useRef(false);
   const kind: Kind = newKind && Object.hasOwn(modes, newKind) ? newKind as Kind : "builder";
@@ -40,6 +43,15 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
     if (scrollNext.current && detail) { scrollNext.current = false; last.current?.scrollIntoView({block: "nearest"}); }
   }, [detail]);
   const session = detail?.session;
+  const pendingImport = session?.stage === "document:pending";
+  useEffect(() => {
+    if (!id || !pendingImport) return;
+    let live = true; setError("");
+    api(`chats/${id}/import`, "POST").then(() => api<Detail>(`chats/${id}`)).then(d => {
+      if (live) { setDetail(d); void act(async () => {}); }
+    }).catch(e => {if (live) setError(e.message);});
+    return () => {live=false;};
+  }, [id, pendingImport, attempt]);
   const send = (action: "say" | "finish") => {
     if (sending || busy || action === "say" && !text.trim()) return;
     void act(async () => {
@@ -81,7 +93,7 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
         <span>{s.title}</span><small>{date(s.updatedAt)}</small></a>)}</div>}
     </> : !detail ? !error && <p role="status">Opening your conversation…</p> : session && <>
       <h1 className="session-title">{session.title}</h1>
-      <div className="session-info"><span className="badge">{modes[session.kind][0]}</span>
+      <div className="session-info"><span className="badge">{modeName(session.kind)}</span>
         <span>{session.state === "closed" ? "Finished" : data.localCoachEnabled ? "Local AI · private session" : "Offline guide"}</span></div>
       {session.kind === "scout" && <a className="minor-link" href="#workspace/jobs">Sources &amp; daily search settings</a>}
       <ol className="transcript" aria-label="Chat transcript">{detail.messages.map((m,i) =>
@@ -92,15 +104,19 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
       {session.targetId && <a className="minor-link" href={`#workspace/prep/${session.targetId}`}>View interview packet &amp; schedule</a>}
       {session.state === "closed" && session.kind === "mock" && data.mocks.find(m => m.id === id)?.report &&
         <a className="button quiet" href={`#workspace/debrief/${id}`}>Review scorecard, examples &amp; next drill</a>}
-      {session.state !== "closed" && composer}
-      <div className="session-tools">{session.state !== "closed" && <button className="text-button" disabled={busy} onClick={() => send("finish")}>Finish session</button>}
+      {session.kind === "import" && (pendingImport ? error ? <button onClick={() => retry(n => n + 1)}>Retry document analysis</button> :
+        <p role="status">Reading the attachment and searching your job history...</p> : <a className="minor-link" href="#workspace/library">Review updated job history</a>)}
+      {session.state !== "closed" && !pendingImport && composer}
+      <div className="session-tools">{session.state !== "closed" && !pendingImport && <button className="text-button" disabled={busy} onClick={() => send("finish")}>Finish session</button>}
         {lastMsg?.speaker === "assistant" && <details><summary>Rate reply</summary><div className="actions">{["up","down"].map(v =>
           <button key={v} className="quiet" disabled={busy} aria-pressed={lastMsg.vote === v} onClick={() => rating(lastMsg,v)}>{v === "up" ? "Helpful" : "Unhelpful"}</button>)}</div></details>}
         <details><summary>Session options</summary><Starters small/><button className="text-button" disabled={busy} onClick={() => {
-          if (confirm("Forget this conversation, its private notes, and facts sourced from it? Job and project labels, interview plans and scout reports are managed separately."))
+          if (confirm(session.kind === "import" ? "Forget this chat and any pending attachment or match questions? Filed document evidence stays in Job experience. Follow-up facts sourced only from this chat are removed." :
+            "Forget this conversation, its private notes, and facts sourced from it? Job and project labels, interview plans and scout reports are managed separately."))
             void act(async () => { await api(`chats/${id}`, "DELETE"); location.hash = "workspace/history"; });
         }}>Delete this conversation</button></details></div>
     </>}
+    <DocumentImport compact change={act} busy={busy} />
   </div>;
 }
 
@@ -122,7 +138,7 @@ export function ChatHistory({ data, busy, act }: Props) {
     {hits !== null && <section aria-label="Search results"><h2>Search results</h2>{hits.length ? hits.map(h => <article className="item" key={h.kind+h.id}><small>{h.kind}</small>
       <h3><a href={h.kind === "interview target" ? `#workspace/prep/${h.id}` : !h.sessionId ? "#workspace/library" : h.kind === "earlier builder" ? `#workspace/archive/${h.sessionId}` : h.kind === "earlier mock" ?
         `#workspace/${h.sessionId}` : chatUrl(h.sessionId)}>{h.label}</a></h3><p>{h.text}</p></article>) : <p>No matching evidence or conversation found.</p>}</section>}
-    <section className="recents"><h2>Sessions</h2>{rows.map(s => <a key={s.id} href={chatUrl(s.id)}><span><strong>{s.title}</strong><small>{modes[s.kind][0]} · {s.state}</small></span><small>{date(s.updatedAt)}</small></a>)}
+    <section className="recents"><h2>Sessions</h2>{rows.map(s => <a key={s.id} href={chatUrl(s.id)}><span><strong>{s.title}</strong><small>{modeName(s.kind)} · {s.state}</small></span><small>{date(s.updatedAt)}</small></a>)}
       {old.map(b => <a key={b.id} href={`#workspace/archive/${b.id}`}>{b.goal}<small>Earlier builder</small></a>)}
       {earlier.map(m => <a key={m.id} href={`#workspace/${m.id}`}>{m.target}<small>Earlier mock</small></a>)}
       {!rows.length && !old.length && !earlier.length && <p>No saved sessions yet.</p>}</section>

@@ -77,7 +77,7 @@ internal static partial class ChatModule
             .HasPrincipalKey(c => new { c.WorkspaceId, c.Id });
     }
 
-    private static ChatMessage Message(PracticeDb db, ChatSession s, int seq, string text, string mode = "studio", Guid? request = null)
+    internal static ChatMessage Message(PracticeDb db, ChatSession s, int seq, string text, string mode = "studio", Guid? request = null)
     {
         var msg = new ChatMessage { ChatId = s.Id, WorkspaceId = s.WorkspaceId, Seq = seq, Text = text, Mode = mode,
             Speaker = request is null ? "assistant" : "user", RequestId = request };
@@ -96,8 +96,9 @@ internal static partial class ChatModule
     public static void Map(WebApplication app)
     {
         var g = app.MapGroup("/api/chats");
-        g.MapGet("", async (HttpContext c, PracticeDb db, CancellationToken ct) =>
-            Results.Ok((await Owned(db, Owner(c)).AsNoTracking().OrderByDescending(s => s.UpdatedAt).Take(200).ToListAsync(ct)).Select(Header)));
+        g.MapGet("", (HttpContext c, PracticeDb db, CancellationToken ct) =>
+            Owned(db, Owner(c)).AsNoTracking().OrderByDescending(s => s.UpdatedAt).Take(200)
+                .Select(s => new { s.Id, s.Kind, s.Title, s.State, s.Stage, s.Revision, s.TargetId, s.DigestId, updatedAt = Utc(s.UpdatedAt) }).ToArrayAsync(ct));
         g.MapGet("/{id:guid}", async (Guid id, HttpContext c, PracticeDb db, CancellationToken ct) =>
         {
             var owner = Owner(c);
@@ -108,6 +109,7 @@ internal static partial class ChatModule
             return Results.Ok(new { session = Header(s), messages, s.PendingSearch });
         });
         g.MapPost("", Start);
+        g.MapPost("/{id:guid}/import", ExperienceModule.RunDocument);
         g.MapPost("/{id:guid}/turns", Turn);
         g.MapDelete("/{id:guid}", Delete);
         g.MapGet("/archive", (HttpContext c, PracticeDb db, CancellationToken ct) => db.Set<ExperienceBuilder>()
@@ -186,6 +188,7 @@ internal static partial class ChatModule
         var q = Owned(db, owner).Where(s => s.Id == id);
         var s = await q.SingleOrDefaultAsync(ct);
         if (s is null) return Results.NotFound();
+        if (s.Kind == "import" && s.Stage == "document:pending") return Results.Conflict("Read the attachment before sending a follow-up.");
         var messages = db.Set<ChatMessage>().Where(m => m.WorkspaceId == owner && m.ChatId == id);
         async Task<IResult?> Check()
         {
@@ -230,7 +233,7 @@ internal static partial class ChatModule
         else if (s.Kind == "scout" && finish) { reply = "Job scout report · Not run. No search was completed, so there are no verified openings, pay or application materials. Start a new scout with a role title."; engine = "report"; }
         else if (s.Kind == "scout") reply = daily?.Reply ?? "Send a job title in 120 characters or fewer so I can run the search.";
         else if (finish) reply = "Session closed. Your conversation is saved in history.";
-        else if (!planning && !planRequest && !remember && fork is null)
+        else if (s.Stage != "document:review" && !planning && !planRequest && !remember && fork is null)
             builder = await BuilderTurn(db, s, text, coach, ct);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -275,6 +278,11 @@ internal static partial class ChatModule
             db.Add(new ChatNote { WorkspaceId = owner, ChatId = id, Text = note });
             reply = "Saved a private chat note, not an experience claim. You can remove it in History → Chat memory.";
         }
+        else if (!finish && s.Stage == "document:review")
+        {
+            reply = await ExperienceModule.ResolveDocumentMatch(db, s, text, ct);
+            engine = "history review";
+        }
         else if (builder is not null)
         {
             (reply, engine) = await ApplyBuilder(db, s, user, builder, ct);
@@ -298,7 +306,7 @@ internal static partial class ChatModule
         if (s is null) return Results.NotFound();
         if (s.SourceId is Guid source)
         {
-            await db.Facts.Where(f => f.WorkspaceId == owner && db.Set<ExperienceCitation>().Any(e => e.WorkspaceId == owner && e.SourceId == source && e.FactId == f.Id)).ExecuteDeleteAsync(ct);
+            await db.Facts.Where(f => f.WorkspaceId == owner && db.Set<ExperienceCitation>().Any(e => e.WorkspaceId == owner && e.SourceId == source && e.FactId == f.Id && !e.Corroborates)).ExecuteDeleteAsync(ct);
             await db.Set<ExperienceSource>().Where(x => x.WorkspaceId == owner && x.Id == source).ExecuteDeleteAsync(ct);
         }
         if (s.Kind == "mock") await WorkspaceApi.ForgetMock(db, owner, id, ct);

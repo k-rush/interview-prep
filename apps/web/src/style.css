@@ -49,6 +49,15 @@ blockquote,.callout { background: var(--soft); margin: .65rem 0; padding: .7rem 
 .error,[role="alert"] { color: #842d1f; }
 .error { border: 1px solid #e2b7ad; padding: .75rem; border-radius: .7rem; background: #fff5f1; }
 .item { margin-top: .75rem; padding-top: .85rem; border-top: 1px solid var(--line); }
+.document-drop { display: grid; justify-items: center; gap: .55rem; padding: clamp(1.2rem,4vw,2rem); text-align: center; border: 2px dashed #96b4a2; border-radius: .85rem; background: #f6f9f5; }
+.document-drop.dragging { border-color: var(--accent); background: var(--soft); }
+.document-drop h2,.document-drop p { margin: 0; }
+.document-drop p { max-width: 35rem; }
+.document-drop input[hidden] { display: none; }
+.chat-attachment { padding: 0; border: 0; }
+.chat-attachment .document-drop { display: flex; flex-wrap: wrap; padding: .65rem; text-align: left; border-width: 1px; }
+.document-drop + .privacy-line { margin: .75rem 0 .3rem; }
+.source-description { display: block; margin-top: .2rem; font-weight: 400; color: var(--muted); }
 .target { white-space: pre-wrap; }
 .live-cue { font-size: clamp(2rem,7vw,4.3rem); line-height: 1.15; }
 .section-line { display: flex; align-items: center; justify-content: space-between; }

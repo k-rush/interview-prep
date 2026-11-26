@@ -10,11 +10,11 @@ export class RequestError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }
 }
 
-export async function api<T = void>(path: string, method = "GET", input?: unknown): Promise<T> {
+export async function api<T = void>(path: string, method = "GET", input?: unknown, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["X-Practice-Request"] = "1";
   if (input !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(`/api/${path}`, { method, headers, body: JSON.stringify(input), cache: "no-store" });
+  const response = await fetch(`/api/${path}`, { method, headers, body: JSON.stringify(input), cache: "no-store", signal });
   if (!response.ok) {
     const reason = await response.json().catch(() => null);
     throw new RequestError(response.status,typeof reason === "string" ? reason : response.status === 401

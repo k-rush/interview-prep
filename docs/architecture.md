@@ -79,10 +79,36 @@ The host, not the model, owns session transitions. A builder goes `active <-> pa
 
 ### 1. Onboard and build context
 
-1. Authenticate and choose **experience evidence** or **job target** so a JD never becomes a candidate credential. For files, `POST /imports` accepts a category (resume, performance review, referral, project write-up, other) and returns a short-lived, write-only URL for one quarantine object. Scan size-limited PDF/DOCX and parse without network access. Bound decompression, pages and OCR. Offer a pasted excerpt for unsupported or encrypted files.
+1. Keep **experience** intake separate from **job target** intake. Dropping a file in Job experience or Chat opens a new import conversation without asking for metadata. The browser extracts readable text locally and posts passages with their locations to `POST /api/experience/documents`. The original file is not stored. Offer free-form paste for redaction or unsupported files.
 2. For a portfolio, project page or repository link, the same import flow saves a private source card. Fetch only the selected, permitted public page using the restricted fetch adapter; record its canonical URL, retrieval date, revision/hash and relevant section. No site crawl, repository clone or authenticated fetch. On denial or a changed page, keep a bookmark and ask for an authorized excerpt; never infer contribution from the link. A LinkedIn URL is also a pointer: [OIDC](https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin-v2) does not grant work history. Use the candidate's own export/paste unless a scoped integration is approved.
-3. Before sending material to an extraction model, show the parsed preview for selection/redaction. For reviews and referrals exclude third-party identifiers, contact details and confidential passages; if the candidate lacks permission, skip the source. The worker extracts **proposals** from approved spans, preserving who made the statement and whether it describes the team, the candidate, or an opinion. Attach a source to one or more roles/projects. Candidate approval records the fact, provenance and permitted uses; the public research cache never receives personal evidence.
+3. The [import harness](#document-import-agent-and-search) reads the attachment and searches existing work history. It commits the description, citations, new proposals, and chat report together. Candidate confirmation and separate use permissions, not the AI summary, determine which statements can enter an application or live reminder. The public research cache never receives personal evidence.
 4. `POST /sessions` with `kind=builder` can still start with no import. The builder asks about missing or conflicting details instead of choosing the most flattering source. Once there are approved details, render a base resume from facts permitted in drafts.
+
+#### Document import agent and search
+
+**Decision:** use a bounded, in-process .NET workflow with the existing local model and SQLite. An agent *harness* is the code that supplies evidence to the model, dispatches tools, checks the result and decides what can be written. This task has a known sequence, so the host always performs both reads; a small model cannot accidentally omit the history search or issue arbitrary queries.
+
+```text
+Drop / choose file -> new private chat + pending text attachment
+  -> read_attachment: numbered text from this session, one batch at a time
+  -> search_history: ranked records from this workspace's jobs, projects, situations and current claims
+  -> local AI: short description + cited entries + possible match numbers
+  -> reconcile in a transaction against current history
+       exact existing claim -> add source support, keep approved wording and permissions
+       new claim            -> file as unconfirmed, with a source location
+       ambiguous identity   -> chat asks which record, keep separate, or skip
+```
+
+**Search is not proof of identity.** The read tool ranks lexical overlap across the owner's whole library before limiting the model packet to eight hits. It excludes notes, mock answers and other tenants. The writer separately checks exact claims and same-kind labels against current records, including those outside the model's shortlist. A same-title job with no corroborating employer, dates or statement is not enough to silently merge jobs. A possible alias is a question, not a write authorization. Source correction and deletion act on authoritative SQLite rows; there is no embedding cache to invalidate.
+
+**Failure and privacy:** opening an upload chat is distinct from committing a library update. Refreshing or reopening a pending chat retries its attachment. A failed batch leaves history unchanged; a successful run clears the pending document text, keeping only the description, cited evidence and any unresolved questions. Replaying a completed analysis does not file it twice. The single-host runner serializes document inference; it is not a distributed queue. Session history and review decisions persist across restarts. No upload goes to GitHub, OpenAI or a public search engine.
+
+| Option researched | What to borrow, and why not use it here |
+| --- | --- |
+| [GitHub Copilot agent loop](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/agent-loop) and [SDK sessions/tools](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features) | Copilot documents a model requesting search/read tools and receiving their results in subsequent turns. Borrow the session and narrow-tool pattern, not a coding agent's shell or repository access. GitHub also documents [semantic repository indexing](https://docs.github.com/en/copilot/concepts/prompting-and-context/repository-indexing) for specific Chat/cloud surfaces; that is not evidence every CLI search uses the same index or ranking algorithm. |
+| [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/) | Function tools, guardrails, sessions, handoffs, human approval and tracing are useful for broader tool-driven conversations. This import needs neither a handoff nor another service; tracing private source text would need its own retention controls. |
+| [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence) | Thread checkpointers and cross-thread stores make sense for branching, multi-day workflows. Here the SQLite chat stage is the checkpoint and job history is the shared store. Consider a graph runtime if recovery must resume individual batches across workers. |
+| [SQLite FTS5 / BM25](https://www.sqlite.org/fts5.html#the_bm25_function) or local semantic retrieval | FTS5 would add an indexed lexical shortlist as collections grow. Embeddings could retrieve paraphrases with no shared words, at the cost of model inference, storage and deletion synchronization. Evaluate on known duplicate, alias, different-employer and conflicting-claim pairs before adding either. Track shortlist recall, incorrect automatic links and the share needing clarification separately. |
 
 ### 2. Prepare, run and grade a mock
 
