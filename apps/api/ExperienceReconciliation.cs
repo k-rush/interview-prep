@@ -49,6 +49,11 @@ public static partial class ExperienceModule
         var history = await db.Facts.AsNoTracking().Where(f => f.WorkspaceId == owner)
             .Select(f => new KnownFact(f.Id, f.Claim, f.Project)).ToListAsync(ct);
         var facts = history.ToLookup(f => Key(f.Claim));
+        var membership = (await db.Set<ExperienceCitation>().Where(c => c.WorkspaceId == owner && c.NodeId != null)
+            .Select(c => new { c.FactId, Node = c.NodeId!.Value }).Distinct().ToListAsync(ct))
+            .GroupBy(c => c.FactId).ToDictionary(g => g.Key, g => g.Select(c => c.Node).ToHashSet());
+        bool FiledWith(KnownFact f, ExperienceNode n) => membership.TryGetValue(f.Id, out var ids) ? ids.Contains(n.Id) :
+            Key(f.Project) == Key(n.Label) && nodes.Count(other => Key(other.Label) == Key(n.Label)) == 1;
         var added = new List<KnownFact>(); var reviews = new List<Review>();
         var names = new HashSet<string>(); var linked = 0;
         foreach (var (line, filing, suggested) in evidence.Distinct())
@@ -64,7 +69,7 @@ public static partial class ExperienceModule
                     (n.Dates.Length == 0 || line.Text.Contains(n.Dates, StringComparison.OrdinalIgnoreCase))).ToArray();
                 if (qualified.Length == 1) node = qualified[0];
                 else if (exact.Length == 1 && (kind != "role" && exact[0].ParentRoleId is null ||
-                    identical.Any(f => Key(f.Project) == Key(exact[0].Label)))) node = exact[0];
+                    identical.Any(f => FiledWith(f, exact[0])))) node = exact[0];
                 if (node is null)
                 {
                     var terms = Words(label);
@@ -76,7 +81,7 @@ public static partial class ExperienceModule
                 }
                 if (node is not null) names.Add(node.Label);
             }
-            var matches = identical.Where(f => node is null || Key(f.Project) == Key(node.Label)).ToArray();
+            var matches = identical.Where(f => node is null || FiledWith(f, node)).ToArray();
             var excerpt = $"Document excerpt · {source.Title} · {line.Location}\n{line.Text}";
             if (choices.Length == 0 && matches.Length == 1)
             {
@@ -86,6 +91,7 @@ public static partial class ExperienceModule
             }
             var fact = Propose(db, owner, node?.Id, node?.Label ?? "Unfiled experience", line.Text, excerpt, "Document excerpt", line.Location, source.Id, null);
             added.Add(new(fact.Id, fact.Claim, fact.Project));
+            if (node is not null) membership[fact.Id] = [node.Id];
             if (choices.Length != 0) reviews.Add(new(fact.Id, fact.Claim, filing!.Kind!, filing.Label!, choices));
             else if (filing is null && history.Find(f => f.Id == suggested) is { } similar)
                 reviews.Add(new(fact.Id, fact.Claim, "statement", "", [new(similar.Id, 0, similar.Claim)]));
@@ -119,17 +125,9 @@ public static partial class ExperienceModule
             {
                 var option = r.Options[0];
                 var original = await db.Facts.SingleOrDefaultAsync(f => f.WorkspaceId == s.WorkspaceId && f.Id == option.Id, ct);
-                if (original is null || original.Claim != option.Display ||
-                    await db.Set<ExperienceCitation>().AnyAsync(c => c.WorkspaceId == s.WorkspaceId && c.FactId == fact.Id && c.SourceId != s.Id, ct))
+                if (original is null || original.Claim != option.Display || !await AttachInstead(db, s, fact, original.Id, null, ct))
                     reply = "The earlier statement or its supporting evidence changed. I kept both records untouched.";
-                else
-                {
-                    var citations = await db.Set<ExperienceCitation>().Where(c => c.WorkspaceId == s.WorkspaceId && c.FactId == fact.Id).ToListAsync(ct);
-                    foreach (var citation in citations) { citation.FactId = original.Id; citation.Corroborates = true; }
-                    await db.SaveChangesAsync(ct);
-                    db.Remove(fact);
-                    reply = "Attached the new passage to the existing statement. Its wording and permissions are unchanged.";
-                }
+                else reply = "Attached the new passage to the existing statement. Its wording and permissions are unchanged.";
             }
         }
         else if (input != "skip")
@@ -154,12 +152,31 @@ public static partial class ExperienceModule
                 }
                 node = current;
             }
-            cite.NodeId = node.Id; fact.Project = node.Label;
-            reply = $"Filed the document statement under {node.Label}. Existing statements were not changed.";
+            var possible = input == "keep separate" ? [] : await db.Facts.Where(f => f.WorkspaceId == s.WorkspaceId && f.Id != fact.Id &&
+                db.Set<ExperienceCitation>().Any(c => c.WorkspaceId == s.WorkspaceId && c.NodeId == node.Id && c.FactId == f.Id))
+                .Select(f => new { f.Id, f.Claim }).ToListAsync(ct);
+            var exact = possible.Where(f => Key(f.Claim) == Key(fact.Claim)).Take(2).ToArray();
+            if (exact.Length == 1 && await AttachInstead(db, s, fact, exact[0].Id, node.Id, ct))
+                reply = $"Attached the passage to the existing statement under {node.Label} without duplicating it.";
+            else
+            {
+                cite.NodeId = node.Id; fact.Project = node.Label;
+                reply = $"Filed the document statement under {node.Label}. Existing statements were not changed.";
+            }
         }
         pending.RemoveAt(0);
         s.ContextJson = pending.Count == 0 ? "{}" : JsonSerializer.Serialize(pending);
         if (pending.Count == 0) { s.Stage = "document:done"; return reply + "\nAll possible matches have been reviewed."; }
         return reply + "\n\n" + Ask(pending[0]);
+    }
+
+    private static async Task<bool> AttachInstead(PracticeDb db, ChatSession s, Fact proposal, Guid existing, Guid? node, CancellationToken ct)
+    {
+        var cites = await db.Set<ExperienceCitation>().Where(c => c.WorkspaceId == s.WorkspaceId && c.FactId == proposal.Id).ToListAsync(ct);
+        if (cites.Any(c => c.SourceId != s.Id)) return false;
+        foreach (var c in cites) { c.FactId = existing; c.Corroborates = true; c.NodeId = node ?? c.NodeId; }
+        await db.SaveChangesAsync(ct);
+        db.Remove(proposal);
+        return true;
     }
 }

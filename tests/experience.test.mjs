@@ -271,6 +271,12 @@ test('import chat searches existing history, corroborates without rewriting, and
   assert.equal(facts.length,2);
   assert.ok(facts.find(f=>f.id===original.id).allowDrafts);
   assert.equal((await chat()).session.stage,'document:done');
+  const {id: repeated}=await post('experience/documents',{passages:[{location:'Page 5',text:'I designed the Atlas rollout.'}]});
+  await post(`chats/${repeated}/import`);
+  const again=await read(`chats/${repeated}`);
+  await post(`chats/${repeated}/turns`,{revision:again.session.revision,requestId:randomUUID(),text:'use 1'});
+  assert.equal((await app.state(a)).facts.length,2,'resolving the same alias must not duplicate its original claim');
+  await ok(app.request(`experience/sources/${repeated}`,a,'DELETE'),204);
   const {id: alias}=await post('experience/documents',{passages:[{location:'Note',text:'I drafted the Atlas checklist.'}]});
   await post(`chats/${alias}/import`);
   const overlap=await read(`chats/${alias}`);
