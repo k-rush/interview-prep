@@ -71,7 +71,7 @@ export function LandingAccount({ onSignedIn = () => { location.hash = "workspace
 }
 
 const labels: Record<string, string> = { mocks: "Mock starts (includes debrief and retry)", imports: "Evidence imports",
-  builds: "Experience and planning sessions", drafts: "Tailored resume and letter pairs", voiceSeconds: "Active voice minutes" };
+  builds: "Coach conversations", drafts: "Tailored resume and letter pairs", voiceSeconds: "Active voice minutes" };
 const day = (unix: number) => new Date(unix * 1000).toLocaleDateString();
 const quantity = (meter: string, units: number) => meter === "voiceSeconds" ? (units / 60).toLocaleString(undefined, { maximumFractionDigits: 1 }) : units;
 
@@ -93,7 +93,7 @@ export function Accounts({ data, act, busy }: { data: Workspace; act: Act; busy:
     {error && <p role="alert">{error}</p>}
     {!account ? <p>Loading account…</p> : <>
       <h3>{account.tier}</h3>
-      {!account.signedIn ? <p>This is a local development workspace, not a verified Free or paid account.
+      {data.privateTest ? <p>Access is limited to the designated Microsoft Entra tester. This synthetic workspace expires with the test. Billing and subscriptions are disabled.</p> : !account.signedIn ? <p>This is a local development workspace, not a verified Free or paid account.
         There is no billing or subscription, and local practice is not metered. <a href="#">Return home for sign-in options.</a></p> :
         <><p>Signed in as {account.email}. {account.periodStart && account.periodEnd ?
           `Test billing period: ${day(account.periodStart)} to ${day(account.periodEnd)}. No rollover.` :
@@ -101,8 +101,8 @@ export function Accounts({ data, act, busy }: { data: Workspace; act: Act; busy:
           <ul>{account.usage.map(m => <li key={m.meter}><strong>{quantity(m.meter, Math.max(0, m.limit - m.used))} of {quantity(m.meter, m.limit)}</strong> {labels[m.meter]} remaining</li>)}</ul>
           {account.paused && <p role="status">New generation is paused while billing is resolved. You can still read existing work.</p>}
           {account.billingStatus !== "none" && <p>Test subscription status: {account.billingStatus?.replaceAll("_", " ")}.</p>}
-          {account.tier === "Free" && <p>The Prep test plan adds scheduled scouting and period allowances: 8 mock starts,
-            40 evidence imports, 100 builder turns, 31 tailored pairs and 120 active minutes with a configured speech service.</p>}
+          {account.tier === "Free" && <p>The Prep test plan adds daily job searches and period allowances: 8 mock starts,
+            40 evidence imports, 100 coach conversations, 31 tailored pairs and 120 active minutes with a configured speech service.</p>}
           <p>The live Prep price has not been set. Live checkout is closed. No auto-conversion or overage charges.</p>
           <div className="actions">
             {account.checkoutEnabled && <button disabled={busy} onClick={() => redirect("checkout")}>Try Stripe test checkout (no real payment)</button>}

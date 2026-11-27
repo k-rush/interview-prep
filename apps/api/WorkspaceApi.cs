@@ -34,6 +34,12 @@ public static class WorkspaceApi
         app.MapPost("/api/workspace", async (HttpContext c, PracticeDb db) =>
         {
             if (c.Items.ContainsKey("workspace")) return Results.NoContent();
+            if (PrivateStaging.Enabled)
+            {
+                db.Add(new Workspace { TokenHash = PrivateStaging.WorkspaceMarker, ExpiresAt = DateTime.MaxValue });
+                await db.SaveChangesAsync(c.RequestAborted);
+                return Results.NoContent();
+            }
             if (!AccountsModule.LocalWorkspaceEnabled) return Results.Unauthorized();
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             var workspace = new Workspace { TokenHash = Hash(token) };
@@ -50,7 +56,7 @@ public static class WorkspaceApi
                 .Select(f => new { f.Id, f.Project, f.Source, f.Claim, f.Confirmed, f.AllowDrafts, f.AllowLive, f.Origin }).ToListAsync();
             var mocks = await db.Mocks.AsNoTracking().Where(m => m.WorkspaceId == owner).OrderByDescending(m => m.StartedAt).ToListAsync();
             var chatIds = (await db.Set<ChatSession>().Where(s => s.WorkspaceId == owner && s.Kind == "mock").Select(s => s.Id).ToListAsync()).ToHashSet();
-            return Results.Ok(new { facts, probes = Practice.Probes, localCoachEnabled, mocks = mocks.Select(m =>
+            return Results.Ok(new { facts, probes = Practice.Probes, localCoachEnabled, privateTest = PrivateStaging.Enabled, mocks = mocks.Select(m =>
                 new { m.Id, m.Target, m.TargetId, chatSession = chatIds.Contains(m.Id), m.Rubric, startedAt = DateTime.SpecifyKind(m.StartedAt, DateTimeKind.Utc),
                     completedAt = m.CompletedAt is DateTime d ? (DateTime?)DateTime.SpecifyKind(d, DateTimeKind.Utc) : null, m.Tailored, m.Adaptive,
                     questions = m.Questions(), answers = m.Answers(), report = m.Report(), m.Retry }) });
@@ -107,7 +113,7 @@ public static class WorkspaceApi
                 if (block.AttemptId is Guid prior) return Results.Ok(new { id = prior });
                 if (block.Kind != "mock" || block.State != "planned") return Results.Conflict("This is not an available mock block.");
             }
-            if ((input.Tailor || input.Adaptive) && !localCoachEnabled) return Results.BadRequest("No local coach is configured.");
+            if ((input.Tailor || input.Adaptive) && !localCoachEnabled) return Results.BadRequest("No coach model is configured.");
             async Task<Mock?> Existing() => input.RequestId is not Guid key ? null :
                 await db.Mocks.AsNoTracking().SingleOrDefaultAsync(m => m.WorkspaceId == owner && m.StartKey == key);
             IResult Replay(Mock m) => m.Target == target && m.TargetId == input.TargetId && m.Tailored == input.Tailor && m.Adaptive == input.Adaptive
@@ -124,7 +130,7 @@ public static class WorkspaceApi
             {
                 if (input.Tailor && !(prepaid = await AccountsModule.TryReserveMockAsync(db, owner, operation))) return Full();
                 var questions = input.Tailor ? await coach.Plan(context, c.RequestAborted) : Practice.Probes.Select(p => p.Question).ToArray();
-                if (questions is null) return Results.Json("The local coach did not return a valid round. Retry or use the standard questions.", statusCode: 503);
+                if (questions is null) return Results.Json("The coach did not return a valid round. Retry or use the standard questions.", statusCode: 503);
                 if (!input.Tailor && saved is not null)
                 {
                     var repeat = await db.Mocks.AnyAsync(m => m.WorkspaceId == owner && m.TargetId == saved.Id && m.ReportJson != null);
@@ -178,7 +184,12 @@ public static class WorkspaceApi
                 return Results.Conflict("The next probe changed. Review the current question and your draft before saving.");
             mock.AnswersJson = JsonSerializer.Serialize(answers.Append(text));
             mock.Revision++;
-            await db.SaveChangesAsync(c.RequestAborted);
+            await using (var tx = await db.Database.BeginTransactionAsync(c.RequestAborted))
+            {
+                if (ExperienceModule.IsWorkAnswer(text))
+                    await ExperienceModule.CaptureAnswer(db, mock.WorkspaceId, text, null, id, $"Mock answer {index + 1}", null, null, c.RequestAborted);
+                await db.SaveChangesAsync(c.RequestAborted); await tx.CommitAsync(c.RequestAborted);
+            }
             if (mock.Adaptive && index + 1 < Practice.Probes.Length)
             {
                 var next = await coach.NextQuestion(mock.Target, qs[index], text, Practice.Probes[index + 1], c.RequestAborted);
@@ -207,13 +218,13 @@ public static class WorkspaceApi
                     p >= 3 ? $"You rated this answer as meeting the anchor: {Practice.Probes[i].Anchor}" : Practice.Probes[i].Drill)).ToArray();
             else if (input.Assessor == PracticeScreen.Assessor && input.Points is null)
                 marks = PracticeScreen.Review(answers);
-            else if (input.Assessor == "local" && localCoachEnabled && input.Points is null)
+            else if (input.Assessor == LocalCoach.Assessor && localCoachEnabled && input.Points is null)
             {
                 marks = await coach.Assess(mock.Target, mock.Questions(), answers, c.RequestAborted);
                 db.Add(new QualityCheck { MockId = id, Check = "rubric-and-exact-transcript-citations", Passed = marks is not null });
-                if (marks is null) { await db.SaveChangesAsync(); return Results.Json("No validated local assessment was returned. Your answers are saved; retry or choose self-assessment.", statusCode: 503); }
+                if (marks is null) { await db.SaveChangesAsync(); return Results.Json("No validated model assessment was returned. Your answers are saved; retry or choose self-assessment.", statusCode: 503); }
             }
-            else return Results.BadRequest("Choose the offline screen, a configured local model, or four self-ratings from 0 to 4.");
+            else return Results.BadRequest("Choose the offline screen, a configured model, or four self-ratings from 0 to 4.");
             mock.ReportJson = JsonSerializer.Serialize(Practice.Assess(input.Assessor!, marks));
             mock.CompletedAt = DateTime.UtcNow;
             var scheduled = await db.Set<PrepBlock>().SingleOrDefaultAsync(b => b.AttemptId == mock.Id);
@@ -232,13 +243,20 @@ public static class WorkspaceApi
             if (mock.Retry is not null) return Results.Conflict("This drill is already saved.");
             mock.Retry = input.Text.Trim();
             mock.Revision++;
-            await db.SaveChangesAsync();
+            await using var tx = await db.Database.BeginTransactionAsync(c.RequestAborted);
+            if (ExperienceModule.IsWorkAnswer(mock.Retry))
+            {
+                var chat = await db.Set<ChatSession>().SingleOrDefaultAsync(s => s.WorkspaceId == mock.WorkspaceId && s.Id == id, c.RequestAborted);
+                await ExperienceModule.CaptureAnswer(db, mock.WorkspaceId, mock.Retry, chat, id, "Ungraded retry", null, null, c.RequestAborted);
+            }
+            await db.SaveChangesAsync(c.RequestAborted); await tx.CommitAsync(c.RequestAborted);
             return Results.NoContent();
         });
     }
 
     internal static async Task ForgetMock(PracticeDb db, Guid owner, Guid id, CancellationToken ct)
     {
+        await ExperienceModule.ForgetConversationSource(db, owner, id, ct);
         await db.Facts.Where(f => f.WorkspaceId == owner && f.SourceMockId == id).ExecuteDeleteAsync(ct);
         await db.Set<PrepBlock>().Where(b => b.AttemptId == id && db.Set<PrepSchedule>().Any(s => s.Id == b.ScheduleId && s.WorkspaceId == owner))
             .ExecuteUpdateAsync(s => s.SetProperty(b => b.AttemptId, (Guid?)null).SetProperty(b => b.State, "skipped"), ct);

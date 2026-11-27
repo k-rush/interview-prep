@@ -202,7 +202,7 @@ public static class Preparation
             if (await Target(db, c, id) is null) return Results.NotFound();
             var plan = await db.Set<PrepSchedule>().AsNoTracking().Include(x => x.Blocks).SingleOrDefaultAsync(x => x.TargetId == id && x.WorkspaceId == Owner(c));
             var attempts = await db.Mocks.AsNoTracking().Where(m => m.TargetId == id && m.WorkspaceId == Owner(c)).ToListAsync();
-            var recent = attempts.Where(m => m.Rubric == Practice.Version && m.Report()?.Assessor is ("local" or PracticeScreen.Assessor) &&
+            var recent = attempts.Where(m => m.Rubric == Practice.Version && m.Report()?.Assessor is ("local" or "azure" or PracticeScreen.Assessor) &&
                 m.CompletedAt >= DateTime.UtcNow.AddDays(-30)).OrderByDescending(m => m.CompletedAt).ToArray();
             var assessor = recent.FirstOrDefault()?.Report()?.Assessor;
             var eligible = recent.Where(m => m.Report()!.Assessor == assessor).ToArray();
@@ -277,8 +277,8 @@ public static class Preparation
             if (report is null || input.Turn < 0 || input.Turn >= report.Marks.Length || !Text(input.Note, 600) || !Text(input.Excerpt, 320) ||
                 !mock.Answers()[input.Turn].Contains(input.Excerpt!.Trim(), StringComparison.Ordinal))
                 return Results.BadRequest("Select a passage from the original answer and explain the disagreement.");
-            if (input.AskLocalCoach && Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is null)
-                return Results.BadRequest("No local coach configured.");
+            if (input.AskLocalCoach && !LocalCoach.Enabled)
+                return Results.BadRequest("No coach model configured.");
             var challenge = await db.Set<AssessmentChallenge>().SingleOrDefaultAsync(x => x.MockId == id && x.Turn == input.Turn);
             if (challenge is not null && challenge.Excerpt == input.Excerpt.Trim() && challenge.Note == input.Note!.Trim() &&
                 (!input.AskLocalCoach || challenge.SecondOpinion is not null)) return Results.NoContent();

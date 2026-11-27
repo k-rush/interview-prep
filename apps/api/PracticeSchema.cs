@@ -19,7 +19,22 @@ public static class PracticeSchema
             return scalar ? await cmd.ExecuteScalarAsync() : await cmd.ExecuteNonQueryAsync();
         }
         var version = Convert.ToInt32(await Query("PRAGMA user_version", true));
-        if (version > 5) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
+        if (version > 7) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
+        if (version < 7 && Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ChatNote'", true)) == 1 &&
+            Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('ChatNote') WHERE name='FactId'", true)) == 0)
+        {
+            await Query("""
+                CREATE TABLE ChatNote_v7 (Id TEXT NOT NULL PRIMARY KEY, WorkspaceId TEXT NOT NULL, ChatId TEXT NULL, FactId TEXT NULL, Text TEXT NOT NULL,
+                    CONSTRAINT CK_ChatNote_source CHECK (ChatId IS NOT NULL OR FactId IS NOT NULL),
+                    FOREIGN KEY (WorkspaceId, ChatId) REFERENCES ChatSession (WorkspaceId, Id) ON DELETE CASCADE,
+                    FOREIGN KEY (WorkspaceId, FactId) REFERENCES Facts (WorkspaceId, Id) ON DELETE CASCADE);
+                INSERT INTO ChatNote_v7 (Id, WorkspaceId, ChatId, Text) SELECT Id, WorkspaceId, ChatId, Text FROM ChatNote;
+                DROP TABLE ChatNote;
+                ALTER TABLE ChatNote_v7 RENAME TO ChatNote;
+                CREATE INDEX IX_ChatNote_WorkspaceId_ChatId ON ChatNote (WorkspaceId, ChatId);
+                CREATE UNIQUE INDEX IX_ChatNote_WorkspaceId_FactId ON ChatNote (WorkspaceId, FactId) WHERE FactId IS NOT NULL AND Text = '';
+                """);
+        }
         if (version < 4)
         {
             var existing = Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='Facts'", true)) == 1;
@@ -56,6 +71,13 @@ public static class PracticeSchema
                 await Query("ALTER TABLE ExperienceCitation ADD COLUMN Corroborates INTEGER NOT NULL DEFAULT 0");
             await Query("PRAGMA user_version=5");
         }
+        if (version < 6)
+        {
+            if (Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('DiscoveryDigest') WHERE name='WebSearchJson'", true)) == 0)
+                await Query("ALTER TABLE DiscoveryDigest ADD COLUMN WebSearchJson TEXT NOT NULL DEFAULT ''");
+            await Query("PRAGMA user_version=6");
+        }
+        if (version < 7) await Query("PRAGMA user_version=7");
         await tx.CommitAsync();
         await db.Database.CloseConnectionAsync();
     }

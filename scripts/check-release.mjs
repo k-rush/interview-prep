@@ -25,10 +25,15 @@ export function checkGate(request, receipt, now = Date.now()) {
   const rollback = request.operation === 'rollback';
   const source = rollback ? request.ring : rings.get(request.ring).previous;
   if (receipt?.ring !== source || receipt.commit !== request.commit || receipt.digest !== request.digest ||
-      receipt.status !== 'healthy' || receipt.criticalChecksPassed !== true || !receipt.deploymentId) {
+      receipt.status !== 'healthy' || receipt.profile !== 'public-demo-v1' || receipt.criticalChecksPassed !== true || !receipt.deploymentId) {
     throw new Error('No matching healthy receipt for this release and ring');
   }
-  if (rollback) return; // The controller must still check retention and compatibility with the current schema.
+  if (rollback) {
+    const timestamp = Date.parse(receipt.observedAt);
+    if (!Number.isFinite(timestamp) || timestamp > now || now - timestamp > 30 * 86400_000)
+      throw new Error('Rollback receipt is outside its retention window');
+    return; // The public demo has no candidate schema to roll back.
+  }
   const start = Date.parse(receipt.deployedAt), end = Date.parse(receipt.observedAt);
   const { minutes, samples } = rings.get(source);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end > now || now - end > 2 * 3600_000 ||
@@ -47,7 +52,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
       const file = join(dir, 'receipt.json');
       execFileSync('az', ['storage', 'blob', 'download', '--auth-mode', 'login',
-        '--account-name', process.env.RELEASE_STORAGE_ACCOUNT, '--container-name', 'releases',
+        '--account-name', process.env.RELEASE_STORAGE_ACCOUNT, '--container-name', operation === 'rollback' ? ring : 'staging',
         '--name', key, '--file', file, '--only-show-errors', '-o', 'none'], { stdio: 'inherit' });
       checkGate(request, JSON.parse(readFileSync(file, 'utf8')));
     } finally {

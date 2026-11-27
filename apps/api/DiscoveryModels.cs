@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("SchemaCheck")]
+
 namespace InterviewPrep;
 
 internal sealed class DiscoverySettings
@@ -84,6 +86,7 @@ internal sealed class DiscoveryDigest
     public required string Trigger { get; set; }
     public required string Status { get; set; }
     public string CoverageJson { get; set; } = "[]";
+    public string WebSearchJson { get; set; } = "";
     public string NextStep { get; set; } = "";
     public string DraftNote { get; set; } = "";
 }

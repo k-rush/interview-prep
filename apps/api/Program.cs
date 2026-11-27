@@ -28,11 +28,37 @@ builder.WebHost.ConfigureKestrel(k =>
     k.Listen(container ? IPAddress.Any : IPAddress.Loopback, port);
     k.Limits.MaxRequestBodySize = 32 * 1024;
 });
+var staging = PrivateStaging.Enabled ? PrivateStaging.Configure(builder, container, publicOrigin) : null;
+if (Environment.GetEnvironmentVariable("INTERVIEW_PREP_DEMO_ONLY") == "1")
+{
+    if (!container || publicOrigin?.Scheme != "https")
+        throw new InvalidOperationException("The public demo requires container mode and its trusted HTTPS origin.");
+    var demo = builder.Build();
+    var root = demo.Environment.WebRootPath;
+    var demoVersion = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+    demo.Use(async (ctx, next) => {
+        ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+        ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+        ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        ctx.Response.Headers.CacheControl = "no-store";
+        await next();
+    });
+    demo.UseWhen(c => c.Request.Path.StartsWithSegments("/assets"), branch => branch.UseStaticFiles());
+    demo.MapGet("/", () => Results.Redirect("/demo"));
+    demo.MapGet("/demo", () => Results.File(Path.Combine(root, "index.html"), "text/html; charset=utf-8"));
+    demo.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = "public-demo", version = demoVersion }));
+    demo.MapGet("/readyz", () => new[] { "index.html", "assets/app.js", "assets/app.css" }.All(p => File.Exists(Path.Combine(root, p)))
+        ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+    demo.Map("/api/{**path}", () => Results.Unauthorized());
+    demo.Run();
+    return;
+}
 var data = Environment.GetEnvironmentVariable("INTERVIEW_PREP_DATA") ??
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InterviewPrep");
 if (OperatingSystem.IsWindows()) Directory.CreateDirectory(data);
 else Directory.CreateDirectory(data, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 var connection = new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, "practice.sqlite"), ForeignKeys = true };
+using var writerLease = staging?.Restore(connection.DataSource);
 builder.Services.AddDbContext<PracticeDb>(db => db.UseSqlite(connection.ToString()));
 DiscoveryModule.Register(builder.Services);
 AccountsModule.Register(builder.Services);
@@ -62,6 +88,7 @@ builder.Services.AddHttpClient<LocalCoach>(http =>
 }).RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false });
 
 var app = builder.Build();
+staging?.Protect(app, publicOrigin!, connection.DataSource);
 using var metrics = new Meter("InterviewPrep.Studio");
 var latency = metrics.CreateHistogram<double>("studio.api.duration", unit: "s");
 using (var scope = app.Services.CreateScope())
@@ -91,11 +118,13 @@ app.Use(async (ctx, next) =>
         }
         var db = ctx.RequestServices.GetRequiredService<PracticeDb>();
         var owner = await AccountsModule.IdentifyAsync(ctx, db);
+        if (staging != null)
+            owner = await db.Workspaces.Where(w => w.TokenHash == PrivateStaging.WorkspaceMarker).Select(w => (Guid?)w.Id).SingleOrDefaultAsync(ctx.RequestAborted);
         if (owner is null && AccountsModule.LocalWorkspaceEnabled && !ctx.Request.Cookies.ContainsKey("practice_account"))
             owner = await WorkspaceApi.Identify(ctx, db);
         if (owner is not null) ctx.Items["workspace"] = owner.Value;
         else if (!AccountsModule.IsPublic(ctx.Request) &&
-            !(AccountsModule.LocalWorkspaceEnabled && !ctx.Request.Cookies.ContainsKey("practice_account") &&
+            !((staging != null || AccountsModule.LocalWorkspaceEnabled && !ctx.Request.Cookies.ContainsKey("practice_account")) &&
               HttpMethods.IsPost(ctx.Request.Method) && ctx.Request.Path == "/api/workspace"))
         {
             ctx.Response.StatusCode = 401;
@@ -118,13 +147,23 @@ app.Use(async (ctx, next) =>
             latency.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, new KeyValuePair<string, object?>("http.status", ctx.Response.StatusCode));
     }
 });
+if (staging != null)
+{
+    var index = File.ReadAllText(Path.Combine(app.Environment.WebRootPath, "index.html"))
+        .Replace("<head>", "<head><meta name=\"private-synthetic-test\" content=\"1\">", StringComparison.Ordinal);
+    app.Use(async (ctx, next) => {
+        if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path.Value is "/" or "/index.html")
+            await Results.Content(index, "text/html; charset=utf-8").ExecuteAsync(ctx);
+        else await next();
+    });
+}
 app.UseDefaultFiles();
 app.UseStaticFiles();
 var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = "local-practice", version }));
+app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = staging != null ? "private-test" : "local-practice", version }));
 app.MapGet("/readyz", async (PracticeDb db, CancellationToken ct) => await db.Database.CanConnectAsync(ct)
     ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
-WorkspaceApi.Map(app, modelPort is not null);
+WorkspaceApi.Map(app, LocalCoach.Enabled);
 ChatModule.Map(app);
 Preparation.Map(app);
 LiveGuide.Map(app);

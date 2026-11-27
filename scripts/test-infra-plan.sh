@@ -3,6 +3,7 @@ work=$(mktemp -d)
 trap 'rm -f "$work/output" "$work/summary" "$work/applied"; rmdir "$work"' EXIT
 export GITHUB_OUTPUT="$work/output" GITHUB_STEP_SUMMARY="$work/summary" APPLIED="$work/applied"
 export PLANE=staging AZURE_RESOURCE_GROUP=fixture GITHUB_RUN_ID=123
+export SHARED_RESOURCE_GROUP=fixture-shared CONTROLLER_DIGEST="sha256:$(printf '%064d' 1)"
 export SCOPE=/subscriptions/fixture/resourceGroups/fixture
 export PLAN='{"status":"Succeeded","changes":[{"resourceId":"x","changeType":"Modify","after":{"size":2}}]}'
 

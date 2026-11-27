@@ -1,8 +1,8 @@
 # Architecture and request flows
 
-**Two conversational agents, a live reminder view, and a scheduled job scout.** Use a modular monolith: a responsive React/TypeScript app served by an ASP.NET Core API, and a worker built from the same domain code. The model decides what to ask next in the builder or mock. The live guide selects prepared cue cards, not generated answers.
+**One career conversation, a separate scored mock, and a live reminder view.** Chat can gather experience, rehearse a question, search for jobs or plan an interview without changing conversation types. The live guide selects prepared cue cards, not generated answers.
 
-**Implemented boundary:** the [first local slice](../README.md#run-the-practice-studio) uses the planned React/ASP.NET stack with a per-browser workspace and SQLite instead of managed auth/Postgres. It pins four questions at mock creation; an opt-in loopback model can tailor them to the role and later assess the frozen answers. The default is scripted questions plus self-assessment. No cloud research, worker, voice, turn-by-turn agent loop, live-interview capture or charging runs in this slice. The diagrams below describe the target service.
+**Implemented boundary:** the [local studio](../README.md#run-the-practice-studio) serves React from ASP.NET, with SQLite persistence, a loopback coach and an in-process daily search worker. The cloud topology below is a proposed deployment, not a prerequisite.
 
 ### What to borrow from Understory
 
@@ -71,7 +71,7 @@ Each run pins a prompt, tool schema, model routing policy and input revision. Th
 | Mock interviewer | Pinned round plan, role, optional approved project titles for context, recent answers and competencies not yet probed. Ask a question or follow-up and mark coverage. | Read model answers, award points, give hints in scored mode or search the web mid-answer. A separate extractor proposes facts from **candidate** turns. |
 | Grader then feedback coach | First call: only candidate/interviewer transcript, pinned rubric and role requirements. Validate turn references and compute threshold in code. Second pass: add relevant confirmed library examples, rewrites and drills. | Improve the grade with unused facts, change the pinned rubric, infer protected traits, or silently turn suggested phrasing into facts. |
 | Live cue selector (not a chat agent) | Before the round: match target competencies to confirmed, live-allowed project labels and generic prompts. During the round: select from the approved deck. | Call a model or search for answers during the interview, write memory, produce a transcript, or invoke the grader. |
-| Job scout / writer | Deterministic filtering and evidence retrieval, bounded reranking, draft structured resume/letter claims with evidence IDs. | Apply to jobs, send outreach, export unreviewed documents to employers, or introduce unsupported credentials. |
+| Job search | Disclose the public source and confirm the role title. Retrieve up to five public links and compare their titles with the owner's chats, memory and history locally. | Send private matching context to search; treat links as confirmed vacancies or application evidence; apply or send outreach. |
 
 Use a small, fast model for extraction, clarification, routine turns and shortlist explanations. Reserve a stronger model for the final rubric assessment, ambiguous evidence, and application writing; run a second assessment only when a validation/disagreement rule requires it. Start with a maximum of three model/tool cycles per interactive turn, one repair for invalid structured output, and a wall-clock deadline; repairs count against the budget. On exhaustion, ask a clarifying question or mark the operation pending, not "try until it works." See [budgets, quality gates and fallbacks](operations.md).
 
@@ -82,7 +82,7 @@ The host, not the model, owns session transitions. A builder goes `active <-> pa
 1. Keep **experience** intake separate from **job target** intake. Dropping a file in Job experience or Chat opens a new import conversation without asking for metadata. The browser extracts readable text locally and posts passages with their locations to `POST /api/experience/documents`. The original file is not stored. Offer free-form paste for redaction or unsupported files.
 2. For a portfolio, project page or repository link, the same import flow saves a private source card. Fetch only the selected, permitted public page using the restricted fetch adapter; record its canonical URL, retrieval date, revision/hash and relevant section. No site crawl, repository clone or authenticated fetch. On denial or a changed page, keep a bookmark and ask for an authorized excerpt; never infer contribution from the link. A LinkedIn URL is also a pointer: [OIDC](https://learn.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin-v2) does not grant work history. Use the candidate's own export/paste unless a scoped integration is approved.
 3. The [import harness](#document-import-agent-and-search) reads the attachment and searches existing work history. It commits the description, citations, new proposals, and chat report together. Candidate confirmation and separate use permissions, not the AI summary, determine which statements can enter an application or live reminder. The public research cache never receives personal evidence.
-4. `POST /sessions` with `kind=builder` can still start with no import. The builder asks about missing or conflicting details instead of choosing the most flattering source. Once there are approved details, render a base resume from facts permitted in drafts.
+4. `POST /api/chats` starts an ordinary conversation with no kind or import required. Both rehearsal and scored mock answers can add or corroborate a statement, with verbatim provenance and linked, editable memory. An exact match never changes an existing claim's permissions. Only confirmed facts permitted for drafts can enter the base resume.
 
 #### Document import agent and search
 
@@ -156,31 +156,11 @@ Use streamed HTTP events for the response. Token deltas are provisional; durable
 2. **Start and select:** fetch the scoped deck after the candidate confirms notes are allowed. A browser selector maps a topic or answer-stage tap to an uncovered card. **Covered** suppresses repeats; **Later** defers it. Manual mode requests no mic permission. Optional adaptive mode, only with explicit interview/participant permission, uses an on-device keyword detector for coarse topic/stage signals from audible speech. It may pick a card at a pause, never compose one. Low confidence means stay quiet; cap automatic changes at one per 30 seconds. Manual actions take precedence.
 3. **Fail quietly:** no meeting bot, screen/system audio capture or cloud speech fallback. If local processing is unavailable or permission is withdrawn, stop the mic; manual selection remains available. Pause suspends all cue changes and capture. Revalidate the deck before showing a personalized card; a profile-change event or expired authorization clears a stale card already on screen. If the deck can't be revalidated, show an approved generic cue or stay silent. Keep current card and coverage in volatile browser memory only. **End** releases the mic and clears live state; there is no live `session`, billing meter, transcript or report job.
 
-### 4. Discover jobs, draft and deliver daily
+### 4. Find jobs in chat and optionally repeat daily
 
-```mermaid
-sequenceDiagram
-    participant T as UTC timer
-    participant D as Postgres + outbox
-    participant Q as Service Bus
-    participant W as Worker
-    participant S as Approved feeds
-    participant C as Candidate inbox
-    T->>D: Claim due schedules and insert unique run per schedule/local date
-    T->>Q: Relay committed run IDs
-    Q->>W: At-least-once delivery
-    W->>S: Refresh due company boards, shared by source when licensed
-    W->>D: Upsert permitted postings and checkpoint feed status and cursor
-    W->>D: Shortlist against goal, retrieve confirmed evidence, exclude dismissals
-    W->>W: Rank, explain fit/gaps, optionally draft one evidence-linked pair
-    W->>D: Commit results, digest and notification outbox
-    W-->>C: One in-app digest plus optional email link
-```
+Chat asks for a public role title, or suggests one for confirmation. Only that title leaves the host. The installed public source returns links; the server orders them using wording from the title, recallable user messages, current agent memory and job history in the same workspace. Explanations describe shared wording, not an assessment of qualifications or a guarantee that a job is open. Empty and unavailable searches are distinct.
 
-- **Coverage:** start with a named roster of permitted employer boards and the user's pasted targets. [Greenhouse](https://docs.greenhouse.io/job-board.html) and [Lever](https://github.com/lever/postings-api) expose board/company-scoped published jobs, not a global licensed job search. Record basis of access, allowed reuse, freshness and rate limits for each source. Coalesce permitted public refreshes under one `(board, refresh_window)` lease: 1,000 candidates tracking a board shouldn't cause 1,000 feed calls. Use the last permitted snapshot with its age, or report coverage as unavailable. Broaden via a contracted feed only if coverage justifies the fee.
-- **Matching:** first remove closed/dismissed postings and explicit hard mismatches (e.g. required on-site vs remote-only). Mark unknowns, don't infer eligibility or protected traits. Retrieve by role/skills/locations; score the bounded shortlist by weighted requirement coverage (must-have weight 2, preferred 1; direct confirmed evidence 1, partial 0.5, unknown 0). Show the numerator, missing evidence and last checked date; this is *documented fit*, not probability of an offer. Candidates can treat unknown location/pay as a hard exclusion. Tie-break by freshness. Rerank/explain only the top few; show at most three new matches.
-- **Drafting:** on demand or one top eligible match per opted-in daily run. Pin the job and fact versions, map every substantive candidate claim to evidence, validate dates/numbers/credentials plus semantic support, and omit or flag anything unsupported. Separate employer facts from candidate facts. Show inline evidence and a diff; export approved PDF/DOCX and plain text without private evidence annotations. Recheck job status, fact versions and edited sentences before export. A new claim the candidate writes can become a manual attestation; approving the document isn't blanket approval for all future memory.
-- **Scheduling:** store IANA timezone, local time and `next_due_at` in UTC. In a transaction, claim due rows and advance the schedule. Spring-forward: next valid local time; fall-back: first occurrence only. Catch up the latest missed day within 24h; record older misses without flooding. Check opt-in, entitlements and cancellation again before paid work and before delivery. A partial feed outage is visible in the digest; an empty feed is not evidence all its jobs closed.
+An affirmative reply after a report and the toggle in Account both update `/api/account/daily-search`. Neither action performs another search. While the host is running, the scheduler checks due searches and puts results in chat history. Old board subscriptions, filters and stored targets never authorize a new public lookup. Historical reports and still-valid approved documents remain available.
 
 ### Failure boundaries
 

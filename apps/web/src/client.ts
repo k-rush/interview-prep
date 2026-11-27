@@ -1,10 +1,12 @@
 export type Fact = { id: string; project: string; source: string; claim: string; confirmed: boolean; allowDrafts: boolean; allowLive: boolean; origin: string };
 export type Probe = { name: string; question: string; anchor: string; drill: string };
 type Mark = { points: number; quote: string; feedback: string };
-type Report = { assessor: "local" | "self" | "wording-v1"; marks: Mark[]; score: number; grade: string; verdict: string; retryIndex: number };
-export const assessorName = (name: string | null) => name === "self" ? "self-assessed" : name === "local" ? "local model" : "offline wording screen";
+type Report = { assessor: "local" | "azure" | "self" | "wording-v1"; marks: Mark[]; score: number; grade: string; verdict: string; retryIndex: number };
+export const assessorName = (name: string | null) => name === "self" ? "self-assessed" : name === "local" ? "local model" : name === "azure" ? "Azure OpenAI" : "offline wording screen";
 export type Mock = { id: string; target: string; targetId: string | null; chatSession: boolean; rubric: string; startedAt: string; completedAt: string | null; tailored: boolean; adaptive: boolean; questions: string[]; answers: string[]; report: Report | null; retry: string | null };
-export type Workspace = { facts: Fact[]; mocks: Mock[]; probes: Probe[]; localCoachEnabled: boolean };
+export type Workspace = { facts: Fact[]; mocks: Mock[]; probes: Probe[]; localCoachEnabled: boolean; privateTest?: boolean };
+export type ChatKind = "chat" | "builder" | "mock" | "scout" | "plan";
+export type ChatSession = { id: string; kind: ChatKind | "import"; title: string; state: string; revision: number; stage: string; updatedAt: string; targetId: string | null; digestId: string | null };
 export type Act = (action: () => Promise<void>) => Promise<void>;
 export class RequestError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }

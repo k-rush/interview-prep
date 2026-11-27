@@ -35,6 +35,7 @@ jobs:
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
           OPS_JOB: ${{ vars.OPS_JOB }}
           OPS_CONTAINER: ${{ vars.OPS_CONTAINER }}
+          CONTROLLER_DIGEST: ${{ vars.CONTROLLER_DIGEST }}
         run: ./scripts/invoke-ops-job.ps1 -Operation monitor -Ring $env:RING
   eval:
     if: >-

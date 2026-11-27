@@ -44,7 +44,12 @@ jobs:
             --tag "$image:run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --metadata-file "$RUNNER_TEMP/build.json" --push .
           digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/build.json")
           printf 'image=%s\ndigest=%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
-          printf 'Commit `%s`, image `%s@%s`\n' "$GITHUB_SHA" "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Commit: %s\n\nImage: %s@%s\n' "$GITHUB_SHA" "$image" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Exercise the exact image in locked public-demo mode
+        shell: pwsh
+        env:
+          SUBJECT: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: ./scripts/test-demo.ps1 -Image $env:SUBJECT -Commit $env:GITHUB_SHA
       - name: Attest the digest from this protected build
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:

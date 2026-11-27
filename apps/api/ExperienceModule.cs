@@ -111,7 +111,7 @@ public static partial class ExperienceModule
     private static Guid Owner(HttpContext c) => (Guid)c.Items["workspace"]!;
     private static bool Valid(string? s, int max) => !string.IsNullOrWhiteSpace(s) && s.Length <= max;
     private static bool Optional(string? s, int max) => s is null || s.Length <= max;
-    private static bool ModelEnabled => Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is not null;
+    private static bool ModelEnabled => LocalCoach.Enabled;
     private static IResult Full() => Results.Json("This workspace has reached its allowance for this action.", statusCode: 429);
 
     public static void Configure(ModelBuilder model)
@@ -278,7 +278,7 @@ public static partial class ExperienceModule
         }
         if (input.Excerpts.Length == 0 && url == null || input.Category == "project-bookmark" && url == null)
             return Results.BadRequest("Select a passage, or save a project URL as a bookmark.");
-        if (input.UseModel && !ModelEnabled) return Results.BadRequest("No local model is configured. Save without model extraction.");
+        if (input.UseModel && !ModelEnabled) return Results.BadRequest("No model is configured. Save without model extraction.");
         var node = input.NodeId == null ? null : await db.Set<ExperienceNode>().AsNoTracking()
             .SingleOrDefaultAsync(n => n.WorkspaceId == owner && n.Id == input.NodeId, ct);
         if (input.NodeId != null && node == null) return Results.NotFound();
@@ -400,6 +400,13 @@ public static partial class ExperienceModule
             Source = string.Join("\n\n", cites.Select(e => e.AttributedExcerpt)), Confirmed = false, AllowDrafts = false, AllowLive = false };
         db.Add(merged);
         foreach (var cite in cites) cite.FactId = merged.Id;
+        var memories = await db.Set<ChatNote>().Where(n => n.WorkspaceId == owner && n.FactId.HasValue && ids.Contains(n.FactId.Value)).ToListAsync(ct);
+        bool linked = false;
+        foreach (var note in memories)
+        {
+            if (note.Text.Length == 0 && linked) db.Remove(note);
+            else { note.FactId = merged.Id; linked |= note.Text.Length == 0; }
+        }
         await db.SaveChangesAsync(ct);
         await facts.ExecuteDeleteAsync(ct);
         await tx.CommitAsync(ct);

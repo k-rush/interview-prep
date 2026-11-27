@@ -1,0 +1,7 @@
+**
+!scripts/
+!scripts/check-release.mjs
+!infra/
+!infra/control/
+!infra/control/*.mjs
+infra/control/*.test.mjs

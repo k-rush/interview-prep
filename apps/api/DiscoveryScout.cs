@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace InterviewPrep;
 
-internal sealed record ScoutInventory(DiscoveryLocalJob[] Locals, DiscoveryBoard[] Boards,
+internal sealed record ScoutInventory(DiscoveryLocalJob[] Locals,
     Dictionary<string, ScoutJob> Jobs, ScoutEvidence[] Evidence, Dictionary<Guid, int> FactRevisions, HashSet<string> Dismissed);
 
 internal sealed class DiscoveryEvidenceObserver(IServiceScopeFactory scopes) : IHostedService
@@ -30,8 +30,10 @@ internal sealed class DiscoveryEvidenceObserver(IServiceScopeFactory scopes) : I
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
-internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, DiscoveryBoardPolicy policy, TimeProvider clock)
+internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoardPolicy policy, TimeProvider clock, ScoutWebSearch webSearch)
 {
+    internal string SearchDisclosure => webSearch.Disclosure;
+    private static readonly SemaphoreSlim[] Runs = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     internal static string? Stamp(DateTime? utc) => utc is null ? null :
         DateTime.SpecifyKind(utc.Value, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture);
@@ -43,7 +45,7 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
     private Task<DiscoveryDigest?> Digest(Guid owner, string day, CancellationToken ct) =>
         db.Set<DiscoveryDigest>().AsNoTracking().SingleOrDefaultAsync(d => d.WorkspaceId == owner && d.LocalDate == day, ct);
     private static bool GoodBoard(DiscoveryBoard b) => b.Coverage == "checked" || b.Coverage.StartsWith("partial:", StringComparison.Ordinal);
-    private async Task<ScoutInventory> Inventory(Guid owner, CancellationToken ct, bool withEvidence = true)
+    private async Task<ScoutInventory> HistoricalInventory(Guid owner, CancellationToken ct, bool withEvidence = true)
     {
         var now = Now;
         var local = await db.Set<DiscoveryLocalJob>().AsNoTracking().Where(x => x.WorkspaceId == owner)
@@ -83,152 +85,126 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
             .Select(x => x.JobKey).ToArrayAsync(ct);
         var revisions = withEvidence ? await db.Set<DiscoveryFactStamp>().AsNoTracking().Where(x => x.WorkspaceId == owner)
             .ToDictionaryAsync(x => x.FactId, x => x.Revision, ct) : [];
-        return new(local, boards, jobs, DiscoveryFit.Index(facts), revisions, dismissed.ToHashSet());
+        return new(local, jobs, DiscoveryFit.Index(facts), revisions, dismissed.ToHashSet());
     }
 
-    private string[] Coverage(ScoutInventory inv)
+    private sealed record Delivery(DiscoveryDigest? Digest = null, bool Replay = false, int StatusCode = 200, string? Error = null);
+
+    internal async Task<IResult> Run(Guid owner, bool scheduled, CancellationToken ct, string? role = null, string? zone = null)
     {
-        var lines = new List<string> { $"{inv.Locals.Length} private pasted listing(s); not externally verified. Reconfirm after seven days." };
-        foreach (var b in inv.Boards)
-            lines.Add($"{DiscoveryBoardPolicy.Label(b.Key)}: {(policy.Permits(b.Key) ? b.Coverage : "access not permitted; excluded")}. " +
-                $"Last nonempty check: {Stamp(b.LastSuccessUtc) ?? "never"}. " +
-                (b.Key.StartsWith("replay:") ? "Recorded fixture, no network." : "Employer-scoped public metadata, not a global search."));
-        return [.. lines];
+        var result = await Deliver(owner, scheduled, false, role, zone, ct);
+        if (result.Error is not null) return Results.Json(result.Error, statusCode: result.StatusCode);
+        return result.Digest is { } d ? Results.Ok(new { d.Id, d.LocalDate, d.TargetRole, result.Replay }) : Results.NoContent();
     }
 
-    internal async Task<IResult> Run(Guid owner, bool scheduled, CancellationToken ct, string? chatRole = null)
+    private async Task<Delivery> Deliver(Guid owner, bool scheduled, bool inChat, string? role, string? zone, CancellationToken ct)
+    {
+        // Fence same-host deliveries before a paid lookup; the owner/date key also fences publication.
+        var gate = Runs[(uint)owner.GetHashCode() % (uint)Runs.Length];
+        await gate.WaitAsync(ct);
+        try { return await RunCore(owner, scheduled, inChat, role?.Trim(), zone, ct); }
+        finally { gate.Release(); }
+    }
+
+    private async Task<Delivery> RunCore(Guid owner, bool scheduled, bool inChat, string? suppliedRole, string? zone, CancellationToken ct)
     {
         var now = Now;
         var settings = await Settings(owner, ct);
-        if (settings is not null && chatRole is not null) settings.Role = chatRole;
-        if (settings is null || settings.Role.Length == 0) return Results.BadRequest("Save a target role before scouting.");
-        if (scheduled && (!settings.Enabled || settings.NextDueUtc is null || settings.NextDueUtc > now)) return Results.NoContent();
-        if (!await Active(owner, now, ct)) return Results.Unauthorized();
+        var hasRole = DailySearch.HasPublicRole(settings);
+        if (scheduled && (!hasRole || !settings!.Enabled || settings.NextDueUtc is null || settings.NextDueUtc > now)) return new();
+        if (!await Active(owner, now, ct)) return new(StatusCode: 401, Error: "Workspace unavailable.");
         if (!await AccountsModule.AllowScoutAsync(db, owner))
         {
-            if (scheduled) await db.Set<DiscoverySettings>().Where(s => s.WorkspaceId == owner && s.Revision == settings.Revision)
+            if (scheduled) await db.Set<DiscoverySettings>().Where(s => s.WorkspaceId == owner && s.Revision == settings!.Revision)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.Enabled, false).SetProperty(x => x.NextDueUtc, (DateTime?)null)
                     .SetProperty(x => x.Revision, x => x.Revision + 1), ct);
-            return Results.Json("New scouting is unavailable on this plan. Existing digests remain readable.", statusCode: 403);
+            return new(StatusCode: 403, Error: "New public job searches are unavailable on this plan. Existing reports remain readable.");
         }
-        var localDay = scheduled ? DiscoveryCalendar.LatestDue(now, settings.LocalTime, settings.Zone) : DiscoveryCalendar.LocalDay(now, settings.Zone);
+        var role = suppliedRole ?? (hasRole ? settings!.Role : "");
+        if (!webSearch.AcceptsRole(role)) return new(StatusCode: 400, Error: DailySearch.NeedRole);
+        zone ??= hasRole ? settings!.Zone : "UTC";
+        const string time = DailySearch.DeliveryTime;
+        if (!DiscoveryCalendar.Valid(zone, time)) return new(StatusCode: 400, Error: "Use a valid IANA time zone.");
+        var localDay = scheduled ? DiscoveryCalendar.LatestDue(now, time, zone) : DiscoveryCalendar.LocalDay(now, zone);
         var day = Day(localDay);
         var existing = await Digest(owner, day, ct);
-        var next = DiscoveryCalendar.Next(now, settings.LocalTime, settings.Zone);
-        if (existing is not null || (scheduled && DiscoveryCalendar.At(localDay, settings.LocalTime, settings.Zone) < now.AddHours(-24)))
-        {
-            if (scheduled) await db.Set<DiscoverySettings>().Where(s => s.WorkspaceId == owner && s.Enabled && s.Revision == settings.Revision)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.NextDueUtc, next), ct);
-            return existing is null ? Results.NoContent() : Results.Ok(new { existing.Id, existing.LocalDate, replay = true });
-        }
-        var follows = await db.Set<DiscoveryFollow>().AsNoTracking().Where(f => f.WorkspaceId == owner)
-            .OrderBy(f => f.BoardKey).Select(f => f.BoardKey).ToArrayAsync(ct);
-        foreach (var key in follows)
-        {
-            if (!await db.Set<DiscoverySettings>().AnyAsync(s => s.WorkspaceId == owner && s.Revision == settings.Revision, ct))
-                return Results.Conflict("Scout settings changed. No digest published.");
-            await feeds.RefreshAsync(db, owner, key, ct);
-        }
+        var search = existing is null ? await webSearch.Find(role, ct) : null;
 
-        // All private effects and the quota debit commit together. A crash before this point leaves the schedule due.
-        // SQLite serializes these write transactions; the owner/date unique key also fences duplicate deliveries.
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var liveSettings = await db.Set<DiscoverySettings>().SingleOrDefaultAsync(s => s.WorkspaceId == owner, ct);
-        if (liveSettings is null || liveSettings.Revision != settings.Revision || (scheduled && !liveSettings.Enabled) ||
-            !await Active(owner, Now, ct)) return Results.Conflict("Scout inputs changed or were removed. No digest published.");
+        var live = await db.Set<DiscoverySettings>().SingleOrDefaultAsync(s => s.WorkspaceId == owner, ct);
+        if (live?.Revision != settings?.Revision || (scheduled && live?.Enabled != true) || !await Active(owner, Now, ct))
+            return new(StatusCode: 409, Error: "Job search settings changed. No new report was published.");
         if (!await AccountsModule.AllowScoutAsync(db, owner))
-            return Results.Json("Scout permission changed. No digest or draft was published.", statusCode: 403);
+            return new(StatusCode: 403, Error: "Job search permission changed. No new report was published.");
         existing = await Digest(owner, day, ct);
-        if (scheduled || (liveSettings.Enabled && liveSettings.NextDueUtc <= now)) liveSettings.NextDueUtc = next;
+        // Reports produced before the public-only flow either lack search citations or
+        // carry the old packet-generation note. Keep them readable, not new search results.
+        var archived = existing is not null && (existing.WebSearchJson.Length == 0 || existing.DraftNote.Length != 0);
+        if (!scheduled && suppliedRole is not null && (!hasRole || !live!.Enabled) &&
+            (existing is null || !archived && existing.TargetRole.Equals(role, StringComparison.OrdinalIgnoreCase)) &&
+            (!hasRole || live!.Role != role || live.Zone != zone))
+            live = DailySearch.Store(db, owner, live, role, zone);
+        if (scheduled) live!.NextDueUtc = DiscoveryCalendar.Next(now, time, zone);
         if (existing is not null)
         {
             await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-            return Results.Ok(new { existing.Id, existing.LocalDate, replay = true });
+            if (archived) return new(StatusCode: 409, Error: "This local day already has a historical report. It remains in history; no new public lookup was made.");
+            return new(existing, true);
         }
-        var inv = await Inventory(owner, ct);
-        var seenRows = await db.Set<DiscoveryMatch>().AsNoTracking().Where(m => m.WorkspaceId == owner)
-            .Select(m => new { m.JobKey, m.JobHash }).ToArrayAsync(ct);
-        var seen = seenRows.Select(x => (x.JobKey, x.JobHash)).ToHashSet();
-        var top = inv.Jobs.Values.Where(j => !inv.Dismissed.Contains(j.Key) && !seen.Contains((j.Key, j.Version)) &&
-                (!settings.RemoteOnly || j.Mode is not ("onsite" or "hybrid")) &&
-                (!settings.RequireLocation || j.Location.Length > 0) && (!settings.RequirePay || j.Pay.Length > 0) &&
-                DiscoveryFit.RoleOverlap(settings.Role, j.Title) > 0)
-            .Select(j => (Job: j, Fit: DiscoveryFit.Assess(j, inv.Evidence, settings.Role)))
-            .OrderByDescending(x => x.Fit.Possible == 0 ? 0 : x.Fit.Earned / x.Fit.Possible)
-            .ThenByDescending(x => x.Job.CheckedUtc).ThenByDescending(x => DiscoveryFit.RoleOverlap(settings.Role, x.Job.Title))
-            .ThenBy(x => x.Job.Key, StringComparer.Ordinal).Take(3).ToArray();
-        var partial = inv.Boards.Any(b => !policy.Permits(b.Key) || b.Coverage != "checked");
-        var coverage = Coverage(inv).ToList();
-        if (scheduled && settings.NextDueUtc is DateTime due && DiscoveryCalendar.LocalDay(due, settings.Zone) < localDay)
+        if (search is null) return new(StatusCode: 409, Error: "The earlier report was removed. Try again.");
+        var coverage = new List<string> { search.Status };
+        if (scheduled && settings!.NextDueUtc is DateTime due && DiscoveryCalendar.LocalDay(due, zone) < localDay)
             coverage.Add("Older missed days were skipped; only the latest due local day was processed.");
-        var nextStep = top.Length > 0 ? "Review the listed gaps, verify that the job is open, and decide whether to prepare a pair." :
-            inv.Locals.Length == 0 && inv.Boards.Length == 0 ? "No sources enabled. Add a private listing or follow a permitted board." :
-            inv.Locals.Length == 0 && inv.Boards.All(b => !policy.Permits(b.Key) || !GoodBoard(b)) ?
-                "No source could verify new openings. Check permissions or try a private listing; this does not mean there are no jobs." :
-                "No new matching listings from the checked sources. Add a permitted listing or review your target.";
-        var digest = new DiscoveryDigest { WorkspaceId = owner, LocalDate = day, Zone = settings.Zone, TargetRole = settings.Role,
-            CreatedUtc = Now, Trigger = scheduled ? "scheduled" : "manual", Status = partial ? "partial" : "complete",
-            CoverageJson = JsonSerializer.Serialize(coverage), NextStep = nextStep,
-            DraftNote = !settings.AutoDraft || !settings.Enabled ? "Automatic drafting is off." :
-                "No fresh match with directly mentioned, draft-permitted evidence; no pair generated." };
+        var nextStep = search.Links.Length > 0
+            ? "Compare the cited descriptions. Check responsibilities, availability, location and pay with the employer; title overlap is not a hiring assessment."
+            : search.Incomplete ? "No public results are available for this report. Check employer careers pages directly; this does not mean there are no jobs."
+            : "No usable cited links were returned. Check employer careers pages directly; this does not mean there are no jobs.";
+        var digest = new DiscoveryDigest { WorkspaceId = owner, LocalDate = day, Zone = zone, TargetRole = role,
+            CreatedUtc = Now, Trigger = scheduled ? "scheduled" : "manual", Status = search.Incomplete ? "partial" : "complete",
+            CoverageJson = JsonSerializer.Serialize(coverage), WebSearchJson = JsonSerializer.Serialize(search), NextStep = nextStep };
         db.Add(digest);
-        var automaticAttempted = false;
-        for (var i = 0; i < top.Length; i++)
+        if (!inChat)
         {
-            var (job, fit) = top[i];
-            var match = new DiscoveryMatch { WorkspaceId = owner, DigestId = digest.Id, JobKey = job.Key, JobHash = job.Version, Rank = i + 1 };
-            db.Add(match);
-            if (!automaticAttempted && settings.Enabled && settings.AutoDraft && job.Fresh && fit.DraftEvidence.Length > 0)
-            {
-                automaticAttempted = true;
-                var packet = await Draft(owner, match, fit.DraftEvidence, inv, ct);
-                digest.DraftNote = packet is null ? "Draft allowance unavailable; matches are still delivered." :
-                    "One pair is ready for your review. Nothing was sent.";
-            }
+            var session = new ChatSession { WorkspaceId = owner, Title = $"{(scheduled ? "Daily job search" : "Job search")} · {role}",
+                DigestId = digest.Id };
+            db.Add(session);
+            ChatModule.Message(db, session, 0, await ReportText(owner, digest, ct), "report");
         }
-        if (chatRole is null) ChatModule.PublishDigest(db, digest);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-        return Results.Ok(new { digest.Id, digest.LocalDate, replay = false });
+        return new(digest);
     }
 
     internal async Task<(Guid? Id, string Text)> ChatReport(Guid owner, string role, string zone, CancellationToken ct)
     {
-        if (!await AccountsModule.AllowScoutAsync(db, owner)) return (null, "This plan has no new job searches. Existing reports are still available.");
-        await using (var setup = await db.Database.BeginTransactionAsync(ct))
+        var delivery = await Deliver(owner, false, true, role, zone, ct);
+        if (delivery.Digest is not { } digest) return (null, delivery.Error ?? "No public report was published.");
+        if (!digest.TargetRole.Equals(role.Trim(), StringComparison.OrdinalIgnoreCase))
+            return (null, "This local day already has a report for a different role. You can open it in history. No additional search or schedule change was made.");
+        return (digest.Id, await ReportText(owner, digest, ct));
+    }
+
+    private async Task<string> ReportText(Guid owner, DiscoveryDigest digest, CancellationToken ct)
+    {
+        var search = SearchResult(digest);
+        var ranker = search.Links.Length == 0 ? new DiscoveryRanking() : await DiscoveryRanking.For(db, owner, ct);
+        return ReportText(digest, ranker.Rank(search, digest.TargetRole));
+    }
+
+    internal static string ReportText(DiscoveryDigest digest, RankedScoutWeb? ranked = null)
+    {
+        ranked ??= new DiscoveryRanking().Rank(SearchResult(digest), digest.TargetRole);
+        var lines = new List<string> { $"Job search report · {digest.TargetRole} · {digest.LocalDate}", ranked.Status };
+        if (ranked.Links.Length > 0)
         {
-            if (!await db.Set<DiscoverySettings>().AnyAsync(x => x.WorkspaceId == owner, ct))
-            {
-                db.Add(new DiscoverySettings { WorkspaceId = owner, Role = role, Zone = DiscoveryCalendar.Valid(zone, "09:00") ? zone : "UTC" });
-                await db.SaveChangesAsync(ct);
-            }
-            await setup.CommitAsync(ct);
+            lines.Add(ranked.Links.Length == 1 ? "One unverified public citation:" : $"{ranked.Links.Length} unverified public citations, ordered locally by title wording:");
+            lines.AddRange(ranked.Links.Select(l => $"{l.Rank}. {l.Title} — {l.Reason}"));
         }
-        var result = await Run(owner, false, ct, role);
-        if (result is not IValueHttpResult { Value: { } value } || result is IStatusCodeHttpResult { StatusCode: not 200 })
-            return (null, "The search could not publish a current digest. Check permissions and try again. No opening was inferred.");
-        var id = JsonSerializer.SerializeToElement(value).GetProperty("Id").GetGuid();
-        var digest = await db.Set<DiscoveryDigest>().AsNoTracking().SingleAsync(x => x.WorkspaceId == owner && x.Id == id, ct);
-        var matches = await db.Set<DiscoveryMatch>().AsNoTracking().Where(m => m.WorkspaceId == owner && m.DigestId == id).Select(m => m.Id).ToArrayAsync(ct);
-        foreach (var match in matches) await CreatePair(owner, match, ct);
-        var existing = digest.TargetRole.Equals(role, StringComparison.OrdinalIgnoreCase) ? "" : $"Today's digest was already run for {digest.TargetRole}, not {role}. ";
-        return (id, $"{existing}Job scout report · {digest.TargetRole} · {digest.LocalDate}\n{matches.Length} matching listing(s) in the permitted sources. " +
-            $"{digest.NextStep}\nOpen the report below for coverage, compensation and application materials. Nothing was sent.");
+        lines.Add(digest.WebSearchJson.Length == 0 ? "This historical report predates public web search." : digest.NextStep);
+        return string.Join("\n", lines);
     }
 
     private static string PinHash(Fact f, ScoutInventory inv) => DiscoveryFit.Hash(DiscoveryFit.FactHash(f),
         inv.FactRevisions.GetValueOrDefault(f.Id).ToString(CultureInfo.InvariantCulture));
-    private async Task<DiscoveryPacket?> Draft(Guid owner, DiscoveryMatch match, Fact[] facts, ScoutInventory inv, CancellationToken ct)
-    {
-        var pins = facts.Select(f => new FactPin(f.Id, PinHash(f, inv))).ToArray();
-        var json = JsonSerializer.Serialize(pins);
-        var version = DiscoveryFit.Hash("verbatim-pair-v1", match.Id.ToString(), match.JobHash, json);
-        var packet = await db.Set<DiscoveryPacket>().AsNoTracking().SingleOrDefaultAsync(p => p.WorkspaceId == owner && p.Version == version, ct);
-        if (packet is not null) return packet;
-        if (!await AccountsModule.TryReserveDraftAsync(db, owner, "scout-pair:" + version)) return null;
-        packet = new() { WorkspaceId = owner, MatchId = match.Id, Version = version, FactPinsJson = json, CreatedUtc = Now };
-        db.Add(packet);
-        return packet;
-    }
 
     private static string Condition(DiscoveryMatch m, ScoutInventory inv)
     {
@@ -249,7 +225,7 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var m = await db.Set<DiscoveryMatch>().AsNoTracking().SingleOrDefaultAsync(x => x.WorkspaceId == owner && x.Id == matchId, ct);
         if (m is null) return Results.NotFound();
-        var inv = await Inventory(owner, ct, withEvidence: false);
+        var inv = await HistoricalInventory(owner, ct, withEvidence: false);
         if (Condition(m, inv) != "current") return Results.Conflict("Reconfirm this listing before using it as an interview target.");
         var j = inv.Jobs[m.JobKey];
         var lines = new List<string> { $"Posting: {j.Title} — {j.Employer}", $"Source: {j.Source}. Checked {Stamp(j.CheckedUtc)}." };
@@ -269,17 +245,18 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
     {
         // Read one consistent snapshot: do not combine an old fact with a newer approval or deletion.
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var s = await Settings(owner, ct) ?? new() { WorkspaceId = owner };
-        var inv = await Inventory(owner, ct);
         var digests = await db.Set<DiscoveryDigest>().AsNoTracking().Where(x => x.WorkspaceId == owner && (digestId == null || x.Id == digestId))
             .OrderByDescending(x => x.CreatedUtc).Take(31).ToArrayAsync(ct);
+        var searches = digests.ToDictionary(d => d.Id, SearchResult);
+        var ranker = searches.Values.Any(s => s.Links.Length > 0) ? await DiscoveryRanking.For(db, owner, ct) : new DiscoveryRanking();
         var ids = digests.Select(d => d.Id).ToArray();
         var matches = await db.Set<DiscoveryMatch>().AsNoTracking().Where(x => x.WorkspaceId == owner && ids.Contains(x.DigestId))
             .OrderBy(x => x.Rank).ToArrayAsync(ct);
         var mids = matches.Select(m => m.Id).ToArray();
         var packets = await db.Set<DiscoveryPacket>().AsNoTracking().Where(p => p.WorkspaceId == owner && mids.Contains(p.MatchId))
             .OrderByDescending(p => p.CreatedUtc).ToArrayAsync(ct);
-        object MatchView(DiscoveryMatch m, string role)
+        var archive = matches.Length > 0 ? await HistoricalInventory(owner, ct) : null;
+        object MatchView(DiscoveryMatch m, string role, ScoutInventory inv)
         {
             var status = Condition(m, inv);
             var job = status is "current" or "dated listing; reconfirm before drafting" ? inv.Jobs[m.JobKey] : null;
@@ -287,42 +264,23 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
             return new { m.Id, m.Rank, status, listing = job is null ? null : new { job.Title, job.Employer, job.Location,
                     job.Mode, job.Pay, job.Source, job.Url, checkedUtc = Stamp(job.CheckedUtc), job.Fresh },
                 fit = fit is null ? null : new { fit.Earned, fit.Possible, fit.Lines, fit.Gaps, fit.Reason },
-                canDraft = job?.Fresh == true && fit!.DraftEvidence.Length > 0,
                 packets = packets.Where(p => p.MatchId == m.Id).Select(p => new { p.Id, current = status == "current" && Validate(p, inv) is not null,
                     approved = p.ApprovedUtc is not null, createdUtc = Stamp(p.CreatedUtc) }).ToArray() };
         }
         var output = new {
             scoutAllowed = await AccountsModule.AllowScoutAsync(db, owner),
-            settings = new { s.Role, s.RemoteOnly, s.RequireLocation, s.RequirePay, s.Zone, s.LocalTime, s.Enabled,
-                s.AutoDraft, nextDueUtc = Stamp(s.NextDueUtc) },
-            roster = policy.Roster.Order(StringComparer.Ordinal).ToArray(), replay = policy.ReplayDirectory is not null,
-            follows = inv.Boards.Select(b => new { key = DiscoveryBoardPolicy.Label(b.Key), b.Coverage, b.RightsBasis, b.Reuse,
-                permitted = policy.Permits(b.Key), checkedUtc = Stamp(b.LastSuccessUtc),
-                refreshAfterUtc = b.LastAttemptUtc.HasValue ? Stamp(b.RefreshAfterUtc) : null }).ToArray(),
-            listings = inv.Locals.Select(j => new { j.Id, j.Employer, j.Title, j.Location, j.Mode, j.Pay,
-                j.Excerpt, j.Must, j.Preferred, checkedUtc = Stamp(j.CheckedUtc) }).ToArray(),
+            webSearchConfigured = webSearch.Configured,
             digests = digests.Select(d => new { d.Id, d.LocalDate, d.Zone, d.TargetRole, createdUtc = Stamp(d.CreatedUtc), d.Trigger,
-                d.Status, coverage = JsonSerializer.Deserialize<string[]>(d.CoverageJson), d.NextStep, d.DraftNote,
-                matches = matches.Where(m => m.DigestId == d.Id).Select(m => MatchView(m, d.TargetRole)).ToArray() }).ToArray()
+                d.Status, coverage = JsonSerializer.Deserialize<string[]>(d.CoverageJson), webSearch = ranker.Rank(searches[d.Id], d.TargetRole), d.NextStep,
+                matches = matches.Where(m => m.DigestId == d.Id).Select(m => MatchView(m, d.TargetRole, archive!)).ToArray() }).ToArray()
         };
         await tx.CommitAsync(ct);
         return Results.Ok(output);
     }
 
-    internal async Task<IResult> CreatePair(Guid owner, Guid matchId, CancellationToken ct)
-    {
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var m = await db.Set<DiscoveryMatch>().AsNoTracking().SingleOrDefaultAsync(x => x.WorkspaceId == owner && x.Id == matchId, ct);
-        if (m is null) return Results.NotFound();
-        var inv = await Inventory(owner, ct);
-        if (Condition(m, inv) != "current") return Results.Conflict("This listing is stale, dismissed, changed or removed.");
-        var facts = DiscoveryFit.Assess(inv.Jobs[m.JobKey], inv.Evidence, (await Settings(owner, ct))?.Role ?? "").DraftEvidence;
-        if (facts.Length == 0) return Results.Conflict("No directly matching, confirmed facts permitted in drafts. Review evidence first.");
-        var packet = await Draft(owner, m, facts, inv, ct);
-        if (packet is null) return Results.Json("No draft allowance is available. Your matches are unchanged.", statusCode: 403);
-        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-        return Results.Ok(new { packet.Id });
-    }
+    private static ScoutWebResult SearchResult(DiscoveryDigest digest) => digest.WebSearchJson.Length == 0
+        ? new([], "Public web search was not consulted for this historical digest.", true)
+        : JsonSerializer.Deserialize<ScoutWebResult>(digest.WebSearchJson)!;
 
     internal async Task<IResult> Packet(Guid owner, Guid id, string action, string? version, string? format, CancellationToken ct)
     {
@@ -330,10 +288,10 @@ internal sealed class DiscoveryScout(PracticeDb db, DiscoveryBoards feeds, Disco
         var p = await db.Set<DiscoveryPacket>().SingleOrDefaultAsync(x => x.Id == id && x.WorkspaceId == owner, ct);
         if (p is null) return Results.NotFound();
         var m = await db.Set<DiscoveryMatch>().AsNoTracking().SingleAsync(x => x.Id == p.MatchId && x.WorkspaceId == owner, ct);
-        var inv = await Inventory(owner, ct);
+        var inv = await HistoricalInventory(owner, ct);
         var facts = Validate(p, inv);
         if (facts is null || Condition(m, inv) != "current")
-            return Results.Conflict("This pair is no longer current. Review the listing and confirmed fact permissions, then generate a new pair.");
+            return Results.Conflict("This historical pair is no longer current. Its listing or the supporting fact permissions changed.");
         var job = inv.Jobs[m.JobKey];
         if (action == "approve")
         {
@@ -367,7 +325,7 @@ internal sealed class DiscoveryTimer(IServiceScopeFactory scopes, DiscoveryBoard
                 using var scope = scopes.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<PracticeDb>();
                 var now = clock.GetUtcNow().UtcDateTime;
-                var owners = await db.Set<DiscoverySettings>().AsNoTracking().Where(x => x.Enabled && x.NextDueUtc <= now &&
+                var owners = await db.Set<DiscoverySettings>().AsNoTracking().Where(x => x.LocalTime == DailySearch.ManagedTime && x.Enabled && x.NextDueUtc <= now &&
                         db.Workspaces.Any(w => w.Id == x.WorkspaceId && w.ExpiresAt > now))
                     .OrderBy(x => x.NextDueUtc).Take(25).Select(x => x.WorkspaceId).ToArrayAsync(stoppingToken);
                 foreach (var owner in owners)

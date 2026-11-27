@@ -1,6 +1,6 @@
 # Candidate experience
 
-The home screen should answer **"What should I do before my next interview?"** rather than open on an empty chat box. Primary navigation: **Today**, **My experience**, **Practice**, **Jobs**. Settings owns privacy, notifications and billing. On mobile, keep the current question or review action above the fold; use a drawer for evidence and sources.
+The workspace opens on **New chat** with editable starters for building job history, practicing a question, finding matching jobs and planning an interview. They are examples, not categories. **Job experience**, **Agent memory** and **Schedule** are reachable from the sidebar or mobile drawer. **Account** owns the daily-search toggle.
 
 ### User stories and acceptance criteria
 
@@ -10,14 +10,14 @@ The home screen should answer **"What should I do before my next interview?"** r
 | Start with a resume, my LinkedIn, or neither | PDF/DOCX import proposes editable fields with source locations. A LinkedIn URL can be saved; without an approved history integration I can upload my own profile export or paste my experience. "Talk me through it" works with no document. |
 | Bring evidence my resume leaves out | From any role or project I can add a performance review, written referral or recommendation, project write-up, portfolio/repository link, or other work sample. I see where each proposed fact came from and choose which uses to allow. Adding a link alone doesn't claim I authored the project. |
 | Build a resume from a conversation | The builder asks about the role I'm seeking, employers, dates, projects, my own actions, trade-offs and outcomes. It asks one useful follow-up at a time. I can skip, mark an outcome unknown, and export a base resume from approved details. |
-| See and control what the agent remembers | I can browse roles and projects outside chat; inspect, edit, merge, reject, exclude from drafts, or forget a claim. Conflicts appear side by side. Approving one doesn't silently change an old report or an already downloaded resume. |
+| See and control what the agent remembers | I can edit or delete individual entries in **Agent memory** without rewriting a transcript. Separately I can inspect, edit, merge, reject or forget a claim in **Job experience** and choose whether to use it in applications. |
 | Prepare for a specific round | I can paste, upload or link a JD, or just describe the job. I see the company's sourced context, missing information, round type, duration and competencies before I start. A generic role still works without a company. |
 | Plan backward from my interview and see whether I'm improving | I enter my interview date and availability. The coach proposes dedicated mock, feedback-review and drill blocks that I can move or skip. From my plan I can start a mock, open its results, and compare completed attempts to see what's improving and what still needs practice. |
 | Practice under realistic conditions | The coach plays a **simulated hiring manager** in text or voice, asks one question at a time, follows up on my actual answer and tracks time. No suggested answers mid-mock. An explicitly assisted drill is separate from a scored attempt. |
 | Learn from an uncomfortable result | A completed mock shows a grade, hire/no-hire decision, confidence, answer evidence, better framing, unused examples and gaps. I can challenge an assessment or retry without erasing the original. |
-| Reuse something new I said in a mock | After the mock, an inbox shows the exact turn and the proposed change. It is available in later sessions and drafts **only after I approve it**. Dismissing a suggestion doesn't cost me points. |
+| Reuse something I said during practice | Work examples from a normal question or a scored mock add to job history and agent memory. A repeated statement can gain a source instead of a duplicate. New claims need my approval before reuse in drafts. Reviewing or editing them never changes a grade. |
 | Remember my best examples during a real interview | I can preview a handful of short reminders and open them when notes are permitted. One bold cue is visible at a time; I can choose a topic, mark it covered, or pause without missing the conversation. The guide never supplies an answer or grades the real interview. |
-| Delegate discovery, not my identity | I opt in to a local delivery time, timezone, role/location constraints, and optionally one draft pair per run. Each day I get matches with reasons, unknowns and next actions, or a truthful explanation of no results/partial coverage. No application is sent. |
+| Delegate discovery, not my identity | I confirm the public title in chat. Search results are compared against my workspace locally. I can ask for daily results or keep the search as a one-off. No application is sent. |
 
 ### A first visit and a returning visit
 
@@ -112,21 +112,15 @@ Show one line of at most eight words with **Covered**, **Later**, **Pause**, and
 
 Ending clears the live view. Covered cards are a personal checklist, not evidence of what the candidate said. No transcript, score, hire/no-hire call or automatic memory update follows a real interview. If desired, the candidate can later tell the builder their own recollection.
 
-### Daily search and application review
+### Job search in a conversation
 
 ```text
-TODAY'S SEARCH  |  08:00 America/Chicago  |  12 boards checked, 1 delayed
-2 new matches   |  1 previously dismissed role hidden
-Senior Platform Engineer - Example Co.                      [View original]
-Matched: rollout ownership [pilot story]; production tooling [project].
-Gap: the posting asks for on-call leadership; no confirmed example yet.
-Unknown: compensation. Last seen today.                     [Not for me]
-Next: [Review resume + letter] [Practice this round] [Add an example]
-
-APPLICATION PACKET                                          [Original | Diff]
-"Piloted a release process with two teams."                  [Evidence: F12]
-Suggested question, NOT in export: "Did you lead the on-call rotation?"
-[Edit] [Approve and export]                    No application has been sent.
+Candidate: Find jobs that match my experience.
+Coach:     Search for "Platform engineer"? Confirm it or type another public title.
+Candidate: Yes.
+Coach:     Here are public links, ordered by role and overlap with your workspace.
+           Would you like me to run this search daily?
+Candidate: Not now.
 ```
 
-The digest defaults to an in-app inbox. Optional email contains a count and sign-in link, not job names, resume text or attachments. "Why this job?", "not relevant", "stale posting", and "wrong fact" mean different things: the first explains a match, the next two tune discovery, and the last opens a memory correction. A dismissed job stays dismissed across runs. Empty states distinguish *no new fit*, *sources unavailable*, *paused by you* and *draft allowance used*. Pausing discovery or billing must not lock candidates out of their existing library.
+Each link identifies its source. Wording overlap is a reason to read the posting, not proof of an opening, qualification, pay or eligibility. Empty results are distinct from an unavailable source. An opted-in search repeats while the host runs; turning it off in Account does not delete past results.

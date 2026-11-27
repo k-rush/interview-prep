@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, values, type Act, type Workspace } from "./client";
+import { api, type Act, type Workspace } from "./client";
 
-type Settings = { role: string; zone: string; localTime: string; enabled: boolean; autoDraft: boolean;
-  remoteOnly: boolean; requireLocation: boolean; requirePay: boolean; nextDueUtc: string | null };
-type Listing = { id: string; title: string; employer: string; mode: string; location: string; pay: string;
-  excerpt: string; must: string; preferred: string; checkedUtc: string };
-type Board = { key: string; permitted: boolean; coverage: string; rightsBasis: string; reuse: string; checkedUtc: string | null;
-  refreshAfterUtc: string | null };
-type Match = { id: string; rank: number; status: string; canDraft: boolean;
-  listing: (Pick<Listing, "title" | "employer" | "location" | "mode" | "pay" | "checkedUtc"> &
-    { fresh: boolean; source: string; url: string | null }) | null;
+type Match = { id: string; rank: number; status: string;
+  listing: { title: string; employer: string; location: string; mode: string; pay: string; checkedUtc: string;
+    fresh: boolean; source: string; url: string | null } | null;
   fit: { earned: number; possible: number; reason: string; gaps: string[];
     lines: { term: string; priority: string; support: string; points: number; weight: number }[] } | null;
   packets: { id: string; current: boolean; approved: boolean; createdUtc: string }[] };
 type Digest = { id: string; localDate: string; zone: string; targetRole: string; trigger: string; status: string;
-  nextStep: string; draftNote: string; coverage: string[]; matches: Match[] };
-type Scout = { scoutAllowed: boolean; settings: Settings; roster: string[]; replay: boolean; follows: Board[]; listings: Listing[]; digests: Digest[] };
+  nextStep: string; coverage: string[]; matches: Match[];
+  webSearch: { links: { title: string; url: string; reason: string }[]; status: string; incomplete: boolean } };
+type Scout = { scoutAllowed: boolean; digests: Digest[] };
 type Pair = { id: string; version: string; approved: boolean; resume: string; letter: string;
   evidence: { id: string; project: string; claim: string; resumeClaim: number; letterClaim: number }[] };
 type PrepPosting = { role: string; company: string; level: string; round: string; description: string; jobUrl: string | null };
@@ -32,85 +27,7 @@ function listenChanges(onChange: () => void) {
   return () => channels.forEach(c => c.close());
 }
 
-function Schedule({ s, allowed, save, busy }: { s: Settings; allowed: boolean; busy: boolean; save: Save }) {
-  const [daily, setDaily] = useState(s.enabled);
-  return <section><h3>Target and schedule</h3><p>Save a role before running. The scout looks for shared words in job titles. It does not infer your location, salary or eligibility.</p>
-    <form onSubmit={e => {
-      e.preventDefault(); const v = values(e.currentTarget);
-      save("settings", "PUT", { role: v.role, zone: v.zone, localTime: v.localTime, enabled: daily && allowed,
-        autoDraft: daily && allowed && v.autoDraft === "on", remoteOnly: v.remoteOnly === "on",
-        requireLocation: v.requireLocation === "on", requirePay: v.requirePay === "on" });
-    }}>
-      <label>Target role<input name="role" defaultValue={s.role} required maxLength={120} placeholder="e.g. Data analyst" /></label>
-      <label><input type="checkbox" name="remoteOnly" defaultChecked={s.remoteOnly}/> Exclude explicitly on-site and hybrid jobs</label>
-      <label><input type="checkbox" name="requireLocation" defaultChecked={s.requireLocation}/> Exclude listings with no stated location</label>
-      <label><input type="checkbox" name="requirePay" defaultChecked={s.requirePay}/> Exclude listings with no stated pay</label>
-      <label>Time zone (IANA)<input name="zone" defaultValue={s.role ? s.zone : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"}
-        required maxLength={80} placeholder="America/Los_Angeles" /></label>
-      <label>Local digest time<input name="localTime" type="time" required defaultValue={s.localTime}/></label>
-      <label><input type="checkbox" checked={daily && allowed} disabled={!allowed} onChange={e => setDaily(e.target.checked)} /> Enable daily scout</label>
-      <label><input type="checkbox" name="autoDraft" disabled={!daily || !allowed} defaultChecked={s.autoDraft}/>
-        Also prepare at most one eligible resume/letter pair per local day, using my draft allowance if metered</label>
-      <button disabled={busy}>Save scout settings</button>
-    </form>
-    <p className="muted">{s.enabled ? `Next scheduled check: ${time(s.nextDueUtc)} (shown in your browser's zone).` : "Daily schedule paused. A manual run is still available if your plan permits."}
-      {" "}If today’s time has passed, enabling the schedule catches up today. The local service must be running to deliver a digest.</p>
-    <div className="actions"><button disabled={busy || !allowed || !s.role} onClick={() => save("run", "POST")}>Run scout now</button>
-      {s.enabled && <button className="quiet" disabled={busy} onClick={() => save("pause", "POST")}>Pause daily scout</button>}</div>
-    <p className="muted">Manual and scheduled runs share one digest per workspace and local date. Rerunning opens the same result, not another charge.</p>
-  </section>;
-}
-
-function ListingForm({ listing, busy, save }: { listing?: Listing; busy: boolean; save: Save }) {
-  return <form onSubmit={e => {
-    e.preventDefault(); const v = values(e.currentTarget);
-    save(listing ? `listings/${listing.id}` : "listings", listing ? "PUT" : "POST", { ...v, permitPrivateUse: v.permitPrivateUse === "on" });
-  }}>
-    <label>Job title<input name="title" required maxLength={180} defaultValue={listing?.title}/></label>
-    <label>Employer<input name="employer" required maxLength={120} defaultValue={listing?.employer}/></label>
-    <label>Location as posted<input name="location" maxLength={150} defaultValue={listing?.location}/></label>
-    <label>Work arrangement<select name="mode" defaultValue={listing?.mode ?? "unknown"}>
-      <option value="unknown">Not stated</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option>
-    </select></label>
-    <label>Pay as posted (optional)<input name="pay" maxLength={120} defaultValue={listing?.pay}/></label>
-    <label>Required skills, comma-separated<input name="must" maxLength={650} defaultValue={listing?.must} placeholder="SQL, Data analysis"/></label>
-    <label>Preferred skills, comma-separated<input name="preferred" maxLength={650} defaultValue={listing?.preferred}/></label>
-    <label>Permitted excerpt (optional)<textarea name="excerpt" maxLength={4000} defaultValue={listing?.excerpt}/></label>
-    <label><input type="checkbox" name="permitPrivateUse" required/> I have permission to use this excerpt privately and have checked this listing.</label>
-    <button disabled={busy}>{listing ? "Save and reconfirm listing" : "Save private listing"}</button>
-  </form>;
-}
-
-function Sources({ scout, busy, save }: { scout: Scout; busy: boolean; save: Save }) {
-  const available = scout.roster.filter(k => !scout.follows.some(f => f.key === k && f.permitted));
-  return <section><h3>Listings and source permissions</h3>
-    <p>Paste a listing to work entirely offline. Private pastes and experience never enter the shared public catalog.</p>
-    <details><summary>Add a private listing</summary><ListingForm save={save} busy={busy}/></details>
-    {scout.listings.map(j => <details className="item" key={`${j.id}-${j.checkedUtc}`}><summary>{j.title} · {j.employer}</summary>
-      <p>Private paste · last confirmed {time(j.checkedUtc)}. Remove a closed listing to invalidate its pairs.</p>
-      <ListingForm listing={j} save={save} busy={busy}/>
-      <button className="quiet" disabled={busy} onClick={() => save(`listings/${j.id}`, "DELETE")}>Remove private listing</button></details>)}
-    <h4>Permitted employer boards</h4>
-    <p>{scout.replay ? "Recorded fixture mode: no network calls or live vacancies." :
-      "No public lookup until you follow a board. Only its public token goes to the fixed Greenhouse or Lever jobs API; no search terms, cookies or candidate facts."}</p>
-    <p className="muted">Only operator-cleared boards are offered. A refresh checks at most 60 entries per board, normally once per 24 hours.
-      Shared metadata is kept for up to three days. A failed or empty feed is not evidence a job closed.</p>
-    {scout.follows.map(b => <div className="item" key={b.key}><strong>{b.key}</strong>
-      <p>{b.permitted ? b.coverage : "Permission withdrawn; excluded"} · Last nonempty check: {time(b.checkedUtc)}</p>
-      <p className="muted">{b.rightsBasis} {b.reuse} {b.refreshAfterUtc && `Next permitted refresh: ${time(b.refreshAfterUtc)}.`}</p>
-      <button className="quiet" disabled={busy} onClick={() => save(`boards/${b.key.split(":").map(encodeURIComponent).join("/")}`, "DELETE")}>
-        Stop using this board</button></div>)}
-    {available.length > 0 ? <form onSubmit={e => { e.preventDefault(); const v = values(e.currentTarget);
-      const [provider, slug] = String(v.board).split(":");
-      save("boards", "POST", { provider, slug, permitPublicLookup: v.allow === "on" });
-    }}><label>Employer board<select name="board">{available.map(k => <option key={k}>{k}</option>)}</select></label>
-      <label><input type="checkbox" required name="allow"/> Allow lookups and local reuse of this board’s permitted public listing metadata.</label>
-      <button disabled={busy || scout.follows.length >= 4}>Follow board</button></form>
-      : scout.roster.length === 0 && <p>No rights-cleared boards are configured here. Private listings still work.</p>}
-  </section>;
-}
-
-function MatchCard({ m, save, busy, allowed, review, prepare }: { m: Match; save: Save; busy: boolean; allowed: boolean;
+function MatchCard({ m, save, busy, review, prepare }: { m: Match; save: Save; busy: boolean;
   review: (id: string) => void; prepare: (id: string) => void }) {
   const j = m.listing, fit = m.fit;
   if (!j || !fit) return <article className="item"><strong>Match {m.rank}</strong><p>{m.status}. This version cannot be drafted or exported.</p></article>;
@@ -125,11 +42,9 @@ function MatchCard({ m, save, busy, allowed, review, prepare }: { m: Match; save
     </details>
     <div className="actions">
       {j.fresh && <button className="quiet" disabled={busy} onClick={() => prepare(m.id)}>Prepare for this job</button>}
-      {m.canDraft && allowed && !m.packets.some(p => p.current) && <button disabled={busy} onClick={() => save(`matches/${m.id}/draft`, "POST")}>Prepare a resume and letter</button>}
       <button className="quiet" disabled={busy} onClick={() => save(`matches/${m.id}/dismiss`, "POST", { reason: "not relevant" })}>Dismiss: not relevant</button>
       <button className="quiet" disabled={busy} onClick={() => save(`matches/${m.id}/dismiss`, "POST", { reason: "stale listing" })}>Dismiss: stale listing</button>
     </div>
-    {!m.canDraft && <p className="muted">A pair needs a fresh listing and directly matching wording in a confirmed, draft-permitted fact. Add or correct a fact in your library; don’t invent a missing skill.</p>}
     {m.packets.map(p => <div key={p.id}>{p.current ? <button className="quiet" disabled={busy}
       onClick={() => review(p.id)}>{p.approved ? "Open approved pair" : "Review resume and letter"}</button> :
       <p className="muted">Previous pair invalidated. Changed or forgotten claims are not displayed.</p>}</div>)}
@@ -208,20 +123,24 @@ export function Discovery({ data, act, busy, digestId }: { data: Workspace; act:
     location.hash = `workspace/prep/${target.id}`;
   });
   const scout = state?.data === data ? state.scout : null;
-  return <>{!digestId && <><a href="#workspace">Back to Chat</a><p className="eyebrow">Scout settings</p><h1>Job scout</h1>
-    <p className="intro">Choose sources and set up daily reports. Nothing is sent to employers.</p></>}
+  return <>{!digestId && <><p className="eyebrow">Job search history</p><h1>Saved job searches</h1>
+    <p className="intro">Revisit public links and earlier reports. Start a new search in a conversation.</p>
+    <a className="button" href="#workspace/new/scout">Find jobs in chat</a></>}
     {error && <p role="alert">{error} <button className="quiet" onClick={() => setRefresh(n => n + 1)}>Retry</button></p>}
-    {!scout ? !error && <p role="status">Loading your scout…</p> : <div inert={busy} aria-busy={busy}>
-      {!scout.scoutAllowed && <p className="callout">Your plan does not currently permit new scouting. You can still review existing digests and approved exports.</p>}
-      {!digestId && <><Schedule key={JSON.stringify(scout.settings)} s={scout.settings} allowed={scout.scoutAllowed} save={save} busy={busy}/>
-      <Sources scout={scout} busy={busy} save={save}/></>}
-      <section><h3>{digestId ? "Listings and application materials" : "Daily digests"}</h3><p>Up to three new matches per day. Reasons use your current permitted evidence, not hidden profile data.</p>
-        {!scout.digests.length && <p>No digest yet. Save a target role, add a private listing or permitted board, then run the scout.</p>}
-        {scout.digests.map((d, i) => <details className="item" key={d.id} open={i === 0}><summary>{d.localDate} · {d.matches.length} match(es) · {d.status}</summary>
+    {!scout ? !error && <p role="status">Loading saved results…</p> : <div inert={busy} aria-busy={busy}>
+      {!scout.scoutAllowed && <p className="callout">New searches are unavailable on your plan. Your existing results remain accessible.</p>}
+      <section><h3>{digestId ? "Search results" : "Past searches"}</h3>
+        {!scout.digests.length && <p>No saved results yet.</p>}
+        {scout.digests.map((d, i) => <details className="item" key={d.id} open={i === 0}><summary>{d.localDate} · {d.targetRole} · {d.status}</summary>
           <p>{d.targetRole} · {d.zone} · {d.trigger} run</p>
           <h4>Source coverage</h4><ul>{d.coverage.map((s, n) => <li key={n}>{s}</li>)}</ul>
-          <p>{d.draftNote}</p><p>{d.nextStep}</p>
-          {d.matches.map(m => <MatchCard key={m.id} m={m} allowed={scout.scoutAllowed} busy={busy} save={save} review={review} prepare={prepare}/>)}
+          <p>{d.nextStep}</p>
+          {d.webSearch.links.length > 0 && <><h4>Public web results · verify with the employer</h4>
+            <p className="muted">Ranked locally against your workspace. These links do not confirm a vacancy, pay or eligibility.</p>
+            <ol>{d.webSearch.links.map(link => <li key={link.url}>
+              <a href={link.url} target="_blank" rel="noopener noreferrer">{link.title}</a><p className="muted">{link.reason}</p>
+            </li>)}</ol></>}
+          {d.matches.map(m => <MatchCard key={m.id} m={m} busy={busy} save={save} review={review} prepare={prepare}/>)}
         </details>)}
       </section>
     </div>}

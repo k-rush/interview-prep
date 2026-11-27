@@ -11,8 +11,8 @@ public sealed class ChatSession
     public Guid WorkspaceId { get; set; }
     public Guid? StartKey { get; set; }
     public Guid? StartBlockId { get; set; }
-    public string Kind { get; set; } = "builder";
-    public string Title { get; set; } = "Experience builder";
+    public string Kind { get; set; } = "chat";
+    public string Title { get; set; } = "New conversation";
     public string State { get; set; } = "active";
     public string Stage { get; set; } = "open";
     public string ContextJson { get; set; } = "{}";
@@ -45,7 +45,9 @@ internal sealed class ChatNote
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid WorkspaceId { get; set; }
-    public Guid ChatId { get; set; }
+    public Guid? ChatId { get; set; }
+    public Guid? FactId { get; set; }
+    public Fact? Fact { get; set; }
     public string Text { get; set; } = "";
 }
 
@@ -55,7 +57,7 @@ internal static partial class ChatModule
     internal sealed record TurnInput(string? Text, Guid RequestId, int? Revision, string? Zone, string? Action);
     internal sealed record SearchInput(string? Query);
     internal sealed record VoteInput(string? Vote);
-    private static bool Model => Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is not null;
+    private static bool Model => LocalCoach.Enabled;
     private static Guid Owner(HttpContext c) => (Guid)c.Items["workspace"]!;
     private static IQueryable<ChatSession> Owned(PracticeDb db, Guid owner) => db.Set<ChatSession>().Where(s => s.WorkspaceId == owner);
     private static DateTime Utc(DateTime d) => DateTime.SpecifyKind(d, DateTimeKind.Utc);
@@ -73,8 +75,7 @@ internal static partial class ChatModule
             .HasPrincipalKey(c => new { c.WorkspaceId, c.Id });
         msg.HasIndex(c => new { c.ChatId, c.Seq }).IsUnique();
         msg.HasIndex(c => new { c.ChatId, c.RequestId }).IsUnique();
-        m.Entity<ChatNote>().HasOne<ChatSession>().WithMany().HasForeignKey(n => new { n.WorkspaceId, n.ChatId })
-            .HasPrincipalKey(c => new { c.WorkspaceId, c.Id });
+        AgentMemory.Configure(m);
     }
 
     internal static ChatMessage Message(PracticeDb db, ChatSession s, int seq, string text, string mode = "studio", Guid? request = null)
@@ -83,13 +84,6 @@ internal static partial class ChatModule
             Speaker = request is null ? "assistant" : "user", RequestId = request };
         db.Add(msg);
         return msg;
-    }
-
-    internal static void PublishDigest(PracticeDb db, DiscoveryDigest digest)
-    {
-        var s = new ChatSession { WorkspaceId = digest.WorkspaceId, Kind = "scout", Title = $"Job scout · {digest.TargetRole}",
-            State = "closed", DigestId = digest.Id };
-        db.Add(s); Message(db, s, 0, $"Job scout report · {digest.LocalDate}\n{digest.NextStep}", "report");
     }
 
     private static object Header(ChatSession s) => new { s.Id, s.Kind, s.Title, s.State, s.Stage, s.Revision, s.TargetId, s.DigestId, updatedAt = Utc(s.UpdatedAt) };
@@ -123,26 +117,24 @@ internal static partial class ChatModule
         g.MapPost("/search", async (SearchInput input, HttpContext c, PracticeDb db, CancellationToken ct) =>
             input.Query?.Trim() is { Length: > 0 and <= 500 } q ? Results.Ok(await ChatRecall.Search(db, Owner(c), q, ct))
                 : Results.BadRequest("Search with 1 to 500 characters."));
-        g.MapGet("/memory", (HttpContext c, PracticeDb db, CancellationToken ct) => db.Set<ChatNote>().Where(n => n.WorkspaceId == Owner(c))
-            .Select(n => new { n.Id, n.ChatId, n.Text }).ToArrayAsync(ct));
-        g.MapDelete("/memory/{id:guid}", async (Guid id, HttpContext c, PracticeDb db, CancellationToken ct) =>
-            await db.Set<ChatNote>().Where(n => n.WorkspaceId == Owner(c) && n.Id == id).ExecuteDeleteAsync(ct) == 1 ? Results.NoContent() : Results.NotFound());
+        AgentMemory.Map(g);
     }
 
-    private static async Task<IResult> Start(StartInput input, HttpContext c, PracticeDb db, CancellationToken ct)
+    private static async Task<IResult> Start(StartInput input, HttpContext c, PracticeDb db, DiscoveryScout scout, CancellationToken ct)
     {
         var owner = Owner(c);
-        if (input.Kind is not ("builder" or "plan" or "mock" or "scout") || input.RequestId == Guid.Empty ||
+        var kind = input.Kind is null or "builder" or "plan" or "scout" ? "chat" : input.Kind;
+        if (kind is not ("chat" or "mock") || input.RequestId == Guid.Empty ||
             (input.TargetId.HasValue || input.BlockId.HasValue) && input.Kind != "mock")
-            return Results.BadRequest("Choose an experience, interview, planning or scout session.");
+            return Results.BadRequest("Start a conversation, or choose a mock interview for a saved target.");
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         if (input.RequestId is Guid key && await Owned(db, owner).SingleOrDefaultAsync(s => s.StartKey == key, ct) is { } prior)
-            return prior.Kind == input.Kind && (prior.Kind != "mock" || prior.TargetId == input.TargetId && prior.StartBlockId == input.BlockId)
+            return (prior.Kind == kind || prior.Kind == input.Kind || prior.Kind == "builder" && kind == "chat") && (prior.Kind != "mock" || prior.TargetId == input.TargetId && prior.StartBlockId == input.BlockId)
                 ? Results.Ok(new { prior.Id }) : Results.Conflict("Start key already used.");
-        var s = new ChatSession { WorkspaceId = owner, Kind = input.Kind, StartKey = input.RequestId, TargetId = input.TargetId, StartBlockId = input.BlockId };
-        if (await Owned(db, owner).CountAsync(ct) >= 200 || s.Kind is "builder" or "plan" &&
+        var s = new ChatSession { WorkspaceId = owner, Kind = kind, StartKey = input.RequestId, TargetId = input.TargetId, StartBlockId = input.BlockId };
+        if (await Owned(db, owner).CountAsync(ct) >= 200 || s.Kind == "chat" &&
             !await AccountsModule.TryReserveBuilderAsync(db, owner, s.Id.ToString("N"))) return Full();
-        var greeting = Greet(s);
+        var greeting = Greet(s, input.Kind, scout.SearchDisclosure);
         if (input.TargetId.HasValue || input.BlockId.HasValue)
         {
             var t = await db.Set<InterviewTarget>().SingleOrDefaultAsync(t => t.WorkspaceId == owner && t.Id == input.TargetId, ct);
@@ -165,14 +157,16 @@ internal static partial class ChatModule
         return Results.Ok(new { s.Id });
     }
 
-    private static string Greet(ChatSession s)
+    private static string Greet(ChatSession s, string? start = null, string disclosure = "")
     {
-        s.Title = s.Kind switch { "mock" => "Mock interview", "plan" => "Interview plan", "scout" => "Job scout", _ => "Experience builder" };
-        return s.Kind switch {
-            "mock" => "What role are you interviewing for? Send the title or a short job description. This is a fresh four-question mock; only your answers count.",
-            "scout" => "What role should I scout for? Send a job title for a report, or say “daily” to schedule a search. I’ll check your permitted sources and prepare a resume and letter for each eligible match, using available draft allowances. Nothing is submitted.",
+        var opening = start ?? s.Kind;
+        s.Title = opening switch { "mock" => "Mock interview", "plan" => "Interview plan", "scout" => "Job search", _ => "New conversation" };
+        if (opening == "scout") s.Stage = "search:role";
+        return opening switch {
+            "mock" => "What role are you interviewing for? Send the title or a short job description. Only your answers count toward the score. Work examples you share are also saved for review in Job experience and Agent memory, not approved for applications.",
+            "scout" => SearchPrompt(disclosure),
             "plan" => ChatPlanning.Start(s),
-            _ => "Tell me about a role, project or situation you’d like to use in an interview. Or tell me about an upcoming interview and we’ll plan for it."
+            _ => "What's on your mind about your job search? We can work on your job history, practice a question, find roles, or plan for an interview."
         };
     }
 
@@ -201,22 +195,23 @@ internal static partial class ChatModule
         if (await Check() is { } blocked) return blocked;
         var zone = input.Zone is { Length: > 0 and <= 80 } ? input.Zone : "UTC";
         var planning = s.Stage.StartsWith("plan:", StringComparison.Ordinal);
-        var planRequest = s.Kind is "builder" or "plan" && !planning && (Is(text, @"\b(plan|prepare|prep|upcoming|scheduled|have|got|my)\b.{0,48}\binterview\b|\binterview (?:at|with|on|next|scheduled)\b") ||
+        var general = s.Kind != "mock" && s.Stage != "document:review" && !planning && !finish;
+        var remember = general && Is(text, @"^remember\s*:");
+        var startMock = general && !remember && Is(text, @"\b(start|begin|do|practice|try|want|run)\b.{0,24}\bmock(?: interview)?\b|^mock interview[.!]?$");
+        var practiceRequest = general && !remember && !startMock && Is(text, @"\b(practice|rehearse|try|example|sample|walk|go through|work through|ask me)\b.{0,65}\b(interview|behavioral|behavioural) questions?\b|\binterview question\b.{0,22}\btogether\b");
+        var experienceRequest = general && !remember && Is(text, @"^(?:help me |let's |i want to )?(?:add|build|update|work on)\b.{0,45}\b(?:my (?:job|work) history|my experience)\b[.!]?$");
+        var planRequest = general && !remember && !startMock && !practiceRequest && (Is(text, @"\b(plan|prepare|prep|upcoming|scheduled)\b.{0,48}\binterview\b|\bI (?:have|got) (?:an?|my next) (?:\w+ ){0,2}interview\b|\b(?:my )?interview (?:at|with|on|next|scheduled|is)\b") ||
             s.Stage == "offered-plan" && Is(text, @"^(yes|yeah|yep|sure)\b"));
-        var remember = s.Kind == "builder" && !planning && Is(text, @"^remember\s*:");
-        var fork = s.Kind == "builder" && !planning && !finish && !remember ? (
-            Is(text, @"\b(start|begin|do|practice|try|want|run)\b.{0,24}\bmock(?: interview)?\b|^mock interview[.!]?$") ? "mock" :
-            Is(text, @"\b(find|scout|search for|look for)\b.{0,24}\b(jobs|openings|positions)\b|^job scout[.!]?$") ? "scout" : null) : null;
+        var search = general && !remember && !startMock && !practiceRequest && !experienceRequest && !planRequest ? SearchStep(s, text) : null;
         var reply = ""; var engine = "studio"; var shouldClose = finish; var recallable = !finish && !remember;
         BuilderReply? builder = null;
         MockReply? mock = null;
         Guid? digest = null;
-        var daily = s.Kind == "scout" && !finish ? DailyStep(s, text, zone) : null;
         var materials = !finish && planning ? await ChatPlanning.Prepare(s, text, research, coach, ct) : null;
-        var searchRole = daily?.Confirmed == true ? daily.Role : daily is null && !finish && s.Kind == "scout" && ValidRole(text) ? text : null;
+        if (s.PendingSearch is not null && s.PendingSearch != text) return Results.Conflict("A search is in progress. Resume it using the same message.");
         // Keep inference and public feed refreshes outside the SQLite writer.
         if (s.Kind == "mock") mock = await MockTurn(db, s, text, finish, coach, ct);
-        else if (searchRole is not null)
+        else if (search?.Role is string searchRole)
         {
             await using (var claim = await db.Database.BeginTransactionAsync(ct))
             {
@@ -227,13 +222,11 @@ internal static partial class ChatModule
                 s.PendingSearch = text;
                 await db.SaveChangesAsync(ct); await claim.CommitAsync(ct);
             }
-            (digest, reply) = await scout.ChatReport(owner, searchRole, daily?.Zone ?? zone, ct);
-            shouldClose = true; engine = "report";
+            (digest, reply) = await scout.ChatReport(owner, searchRole, zone, ct);
+            engine = "report";
         }
-        else if (s.Kind == "scout" && finish) { reply = "Job scout report · Not run. No search was completed, so there are no verified openings, pay or application materials. Start a new scout with a role title."; engine = "report"; }
-        else if (s.Kind == "scout") reply = daily?.Reply ?? "Send a job title in 120 characters or fewer so I can run the search.";
         else if (finish) reply = "Session closed. Your conversation is saved in history.";
-        else if (s.Stage != "document:review" && !planning && !planRequest && !remember && fork is null)
+        else if (general && !planRequest && !remember && !startMock && !practiceRequest && !experienceRequest && search is null)
             builder = await BuilderTurn(db, s, text, coach, ct);
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
@@ -248,23 +241,28 @@ internal static partial class ChatModule
             if (mock.Invalid is { } reason) return Results.BadRequest(reason);
             if (mock.Start && !await AccountsModule.TryReserveMockAsync(db, owner, $"mock:{id:D}")) return Full();
             (reply, engine, shouldClose) = await ApplyMock(db, s, text, mock, ct);
+            if (!mock.Start && !mock.Finish && ExperienceModule.IsWorkAnswer(text)) user.Recallable = false;
         }
-        else if (s.Kind == "scout")
+        else if (search is not null)
         {
             if (s.PendingSearch is not null && s.PendingSearch != text) return Results.Conflict("A search is already in progress. Resume it using the same message.");
-            s.PendingSearch = null; s.DigestId = digest;
-            if (daily is not null)
-            {
-                s.Stage = daily.Stage; s.ContextJson = shouldClose ? "{}" : JsonSerializer.Serialize(daily);
-                if (daily.Confirmed && digest is not null && await AccountsModule.AllowScoutAsync(db, owner))
-                    reply += "\n\n" + await EnableDaily(db, owner, daily, ct);
-            }
-            if (searchRole is not null) s.Title = "Job scout · " + ChatRecall.Clip(searchRole, 64);
+            reply = await ApplySearch(db, s, search, zone, digest, reply, scout.SearchDisclosure, ct);
         }
-        else if (fork is not null)
+        else if (practiceRequest)
+        {
+            s.Stage = "practice:ownership"; s.ContextJson = "{}";
+            reply = "Let's try one together, without a score. " + Practice.Probes[0].Question +
+                " I'll use the work you describe to update your job history and agent memory.";
+        }
+        else if (experienceRequest)
+        {
+            s.Stage = "experience"; s.ContextJson = "{}";
+            reply = "Tell me about a role or project you'd like in your job history. What was your own contribution?";
+        }
+        else if (startMock)
         {
             if (await Owned(db, owner).CountAsync(ct) >= 200) return Full();
-            var next = new ChatSession { WorkspaceId = owner, Kind = fork };
+            var next = new ChatSession { WorkspaceId = owner, Kind = "mock" };
             db.Add(next); Message(db, next, 0, Greet(next)); user.NextChatId = next.Id;
             reply = $"Opened a new {next.Title.ToLowerInvariant()} session. You can return to this conversation anytime.";
         }
@@ -273,10 +271,10 @@ internal static partial class ChatModule
         else if (!finish && remember)
         {
             var note = text[(text.IndexOf(':') + 1)..].Trim();
-            if (note.Length is < 1 or > 300 || await db.Set<ChatNote>().CountAsync(n => n.WorkspaceId == owner, ct) >= 40)
+            if (note.Length is < 1 or > 300 || await db.Set<ChatNote>().CountAsync(n => n.WorkspaceId == owner && n.FactId == null, ct) >= 40)
                 return Results.BadRequest("Use a short note (1–300 characters; up to 40 notes).");
             db.Add(new ChatNote { WorkspaceId = owner, ChatId = id, Text = note });
-            reply = "Saved a private chat note, not an experience claim. You can remove it in History → Chat memory.";
+            reply = "Saved a private coaching note, not an experience claim. You can edit or delete it in Agent memory.";
         }
         else if (!finish && s.Stage == "document:review")
         {
@@ -286,12 +284,15 @@ internal static partial class ChatModule
         else if (builder is not null)
         {
             (reply, engine) = await ApplyBuilder(db, s, user, builder, ct);
-            s.Stage = Is(builder.Text, @"\b(?:upcoming|scheduled|have an?)\b.{0,30}\binterview\b") ? "offered-plan" : "open";
+            s.Stage = s.Stage == "practice:ownership" && builder.Statement ? "practice:outcome" :
+                s.Stage.StartsWith("practice:") || s.Stage == "experience" ? s.Stage :
+                Is(builder.Text, @"\b(?:upcoming|scheduled|have an?)\b.{0,30}\binterview\b") ? "offered-plan" : "open";
+            if (s.Stage == "open") s.ContextJson = "{}";
         }
         if (shouldClose) s.State = "closed";
-        if (s.Revision == 0 && s.Kind == "builder" && !finish && !remember && fork is null)
-            s.Title = planRequest ? "Upcoming interview" : ChatRecall.Clip(text, 60);
-        Message(db, s, seq + 1, reply, engine).Recallable = s.Kind == "mock" || engine is "scorecard" or "report" ||
+        if (s.Revision == 0 && s.Title == "New conversation" && !finish && !remember && !startMock && search?.Role is null)
+            s.Title = planRequest ? "Upcoming interview" : practiceRequest ? "Interview question practice" : experienceRequest ? "My job history" : ChatRecall.Clip(text, 60);
+        Message(db, s, seq + 1, reply, engine).Recallable = practiceRequest || experienceRequest || s.Kind == "mock" || engine is "scorecard" or "report" ||
             builder?.Recallable == true || planning && materials is null && !reply.Contains("Prep packet", StringComparison.Ordinal);
         s.Revision++; s.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
@@ -304,12 +305,8 @@ internal static partial class ChatModule
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var s = await Owned(db, owner).SingleOrDefaultAsync(x => x.Id == id, ct);
         if (s is null) return Results.NotFound();
-        if (s.SourceId is Guid source)
-        {
-            await db.Facts.Where(f => f.WorkspaceId == owner && db.Set<ExperienceCitation>().Any(e => e.WorkspaceId == owner && e.SourceId == source && e.FactId == f.Id && !e.Corroborates)).ExecuteDeleteAsync(ct);
-            await db.Set<ExperienceSource>().Where(x => x.WorkspaceId == owner && x.Id == source).ExecuteDeleteAsync(ct);
-        }
         if (s.Kind == "mock") await WorkspaceApi.ForgetMock(db, owner, id, ct);
+        else if (s.SourceId is Guid source) await ExperienceModule.ForgetConversationSource(db, owner, source, ct);
         db.Remove(s); await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Results.NoContent();
     }

@@ -5,12 +5,14 @@ case "${1:-}" in
   *) echo "Expected preview or apply." >&2; exit 1 ;;
 esac
 case "$PLANE" in staging|production) ;; *) exit 1 ;; esac
+[[ "$CONTROLLER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ && -n "$SHARED_RESOURCE_GROUP" ]]
 plan=$(mktemp)
 trap 'rm -f "$plan"' EXIT
 scope=$(az group show --name "$AZURE_RESOURCE_GROUP" --query id --only-show-errors -o tsv)
 [[ "${scope,,}" =~ ^/subscriptions/[^/]+/resourcegroups/[^/]+$ ]]
 target=(--resource-group "$AZURE_RESOURCE_GROUP" --name "infra-$GITHUB_RUN_ID" --mode Incremental
-  --template-file infra/bicep/main.bicep --parameters "@infra/bicep/parameters/$PLANE.json")
+  --template-file infra/bicep/main.bicep --parameters "@infra/bicep/parameters/$PLANE.json"
+  "sharedResourceGroup=$SHARED_RESOURCE_GROUP" "controllerDigest=$CONTROLLER_DIGEST")
 az deployment group what-if "${target[@]}" --validation-level ProviderNoRbac \
   --result-format FullResourcePayloads --no-pretty-print --only-show-errors -o json > "$plan"
 jq -es 'length == 1 and (.[0] | .status == "Succeeded" and .error == null

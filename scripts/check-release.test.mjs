@@ -4,7 +4,7 @@ import { checkGate, receiptKey } from './check-release.mjs';
 
 const now = Date.parse('2026-11-25T12:00:00Z');
 const request = { operation: 'promote', ring: 'production', commit: 'a'.repeat(40), digest: 'sha256:' + 'b'.repeat(64) };
-const receipt = { ...request, ring: 'staging', deploymentId: 'candidate-1', status: 'healthy', criticalChecksPassed: true,
+const receipt = { ...request, ring: 'staging', deploymentId: 'candidate-1', profile: 'public-demo-v1', status: 'healthy', criticalChecksPassed: true,
   deployedAt: '2026-11-25T11:25:00Z', observedAt: '2026-11-25T11:55:00Z', completedChecks: 5 };
 
 test('only adjacent, fresh evidence for the identical image admits production', () => {

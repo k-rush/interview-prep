@@ -43,18 +43,20 @@ internal static partial class ChatModule
         }
         if (m is null) throw new DbUpdateConcurrencyException();
         answers = [.. answers, text]; m.AnswersJson = JsonSerializer.Serialize(answers); m.Revision++;
+        if (ExperienceModule.IsWorkAnswer(text))
+            await ExperienceModule.CaptureAnswer(db, s.WorkspaceId, text, s, m.Id, $"Mock answer {answers.Length}", null, null, ct);
         if (answers.Length < 4)
         {
             var i = answers.Length; var qs = m.Questions();
             if (action.Next is not null) { qs[i] = action.Next; m.QuestionsJson = JsonSerializer.Serialize(qs); }
-            return ($"Question {i + 1} of 4 · {Practice.Probes[i].Name}\n{qs[i]}", action.Next is not null ? "local model" : "standard probe", false);
+            return ($"Question {i + 1} of 4 · {Practice.Probes[i].Name}\n{qs[i]}", action.Next is not null ? LocalCoach.Label : "standard probe", false);
         }
         if (Model) db.Add(new QualityCheck { MockId = m.Id, Check = "rubric-and-exact-transcript-citations", Passed = action.Marks is not null });
-        var report = Practice.Assess(action.Marks is null ? PracticeScreen.Assessor : "local", action.Marks ?? PracticeScreen.Review(answers));
+        var report = Practice.Assess(action.Marks is null ? PracticeScreen.Assessor : LocalCoach.Assessor, action.Marks ?? PracticeScreen.Review(answers));
         m.ReportJson = JsonSerializer.Serialize(report); m.CompletedAt = DateTime.UtcNow;
         var scheduled = await db.Set<PrepBlock>().SingleOrDefaultAsync(b => b.AttemptId == m.Id && db.Set<PrepSchedule>().Any(p => p.WorkspaceId == s.WorkspaceId && p.Id == b.ScheduleId), ct);
         if (scheduled is not null) scheduled.State = "done";
-        var source = action.Marks is not null ? "Local model · exact answer citations validated" :
+        var source = action.Marks is not null ? $"{LocalCoach.Label} · exact answer citations validated" :
             (Model ? "Model assessment unavailable or not supported by your transcript. " : "") + "Offline wording checklist, not an AI grade";
         return ($"Practice scorecard · {report.Score}/100 ({report.Grade}) · {report.Verdict}\n{source}. Practice only, not an employer prediction.\n\n" +
             string.Join("\n\n", report.Marks.Select((mark, i) => $"{Practice.Probes[i].Name} · {mark.Points}/4\n“{mark.Quote}”\n{mark.Feedback}")) +

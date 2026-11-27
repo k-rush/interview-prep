@@ -22,7 +22,9 @@ jobs:
       vars.RELEASES_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
       contains(fromJSON('["staging","production"]'), inputs.ring) &&
       contains(fromJSON('["promote","rollback"]'), inputs.operation)
-    environment: ${{ inputs.ring }}
+    environment:
+      name: ${{ inputs.ring }}
+      url: ${{ steps.route.outputs.url }}
     concurrency:
       group: mutate-${{ inputs.ring }}
       cancel-in-progress: false
@@ -37,6 +39,7 @@ jobs:
       OPERATION: ${{ inputs.operation }}
       COMMIT: ${{ inputs.commit }}
       DIGEST: ${{ inputs.digest }}
+      CONTROLLER_DIGEST: ${{ vars.CONTROLLER_DIGEST }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -68,6 +71,14 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
             --source-ref refs/heads/main --source-digest "$COMMIT" --deny-self-hosted-runners
           node scripts/check-release.mjs "$OPERATION" "$RING" "$COMMIT" "$DIGEST"
+      - name: Recheck the staged public route before production promotion
+        if: inputs.ring == 'production' && inputs.operation == 'promote'
+        env:
+          STAGING_ORIGIN: ${{ vars.STAGING_DEMO_ORIGIN }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGING_ORIGIN" =~ ^https://studio-staging\.[a-z0-9.-]+\.azurecontainerapps\.io$ ]]
+          node --input-type=module -e 'import { smoke } from "./infra/control/smoke.mjs"; await smoke(...process.argv.slice(1))' "$STAGING_ORIGIN" "$COMMIT"
       - name: Apply under lease, smoke, then record the result
         shell: pwsh
         env:
@@ -75,3 +86,15 @@ jobs:
           OPS_JOB: ${{ vars.OPS_JOB }}
           OPS_CONTAINER: ${{ vars.OPS_CONTAINER }}
         run: ./scripts/invoke-ops-job.ps1 -Operation $env:OPERATION -Ring $env:RING -Commit $env:COMMIT -Digest $env:DIGEST
+      - name: Check the public HTTPS route from outside Azure
+        id: route
+        env:
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          domain=$(az containerapp env show -g "$AZURE_RESOURCE_GROUP" -n "demo-$RING" --query properties.defaultDomain -o tsv)
+          [[ "$domain" =~ ^[a-z0-9.-]+\.azurecontainerapps\.io$ ]]
+          origin="https://studio-$RING.$domain"
+          node --input-type=module -e 'import { smoke } from "./infra/control/smoke.mjs"; await smoke(...process.argv.slice(1))' "$origin" "$COMMIT"
+          printf 'url=%s/demo\n' "$origin" >> "$GITHUB_OUTPUT"
+          printf 'Public demo: %s/demo\n' "$origin" >> "$GITHUB_STEP_SUMMARY"
