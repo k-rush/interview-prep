@@ -12,7 +12,7 @@ public sealed class StagingModel
     private readonly Uri responses;
     private readonly TokenCredential credential;
     internal string Deployment { get; }
-    internal StagingModel(DateTimeOffset expires, string share, string endpoint, string deployment, Guid clientId)
+    internal StagingModel(DateTimeOffset expires, string share, string endpoint, string deployment, Guid clientId, TokenCredential? tokenCredential = null)
     {
         var uri = new Uri(endpoint, UriKind.Absolute);
         if (uri.Scheme != "https" || !uri.IsDefaultPort || uri.UserInfo != "" || uri.PathAndQuery != "/" || uri.Fragment != "" ||
@@ -21,7 +21,7 @@ public sealed class StagingModel
             throw new InvalidOperationException("Invalid Azure OpenAI resource endpoint or deployment.");
         this.expires = expires; Deployment = deployment; responses = new Uri(uri, "openai/v1/responses");
         slots = Directory.CreateDirectory(Path.Combine(share, "model-budget")).FullName;
-        credential = new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(clientId.ToString()));
+        credential = tokenCredential ?? new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(clientId.ToString()));
     }
 
     internal async Task<HttpResponseMessage> Send(HttpClient http, object body, bool search, CancellationToken ct)
@@ -53,8 +53,10 @@ public sealed class StagingModel
     internal async Task<string?> Complete(HttpClient http, string instruction, object packet, int maxTokens, CancellationToken ct)
     {
         using var response = await Send(http, new {
-            model = Deployment, store = false, instructions = instruction + "\nReturn valid JSON.",
-            input = JsonSerializer.Serialize(packet), text = new { format = new { type = "json_object" } },
+            model = Deployment, store = false,
+            input = new[] { new { role = "developer", content = instruction + "\nReturn valid JSON." },
+                new { role = "user", content = JsonSerializer.Serialize(packet) } },
+            text = new { format = new { type = "json_object" } },
             reasoning = new { effort = "low" }, max_output_tokens = Math.Clamp(maxTokens + 700, 800, 1800)
         }, false, ct);
         if (!response.IsSuccessStatusCode) return null;

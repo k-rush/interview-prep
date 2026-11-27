@@ -1,9 +1,33 @@
 using System.Security.Claims;
+using System.Text;
+using System.Text.Json;
+using Azure.Core;
 using InterviewPrep;
 using Microsoft.Data.Sqlite;
 
 internal static class PrivateStagingChecks
 {
+    private sealed class FixtureToken : TokenCredential
+    {
+        public override AccessToken GetToken(TokenRequestContext context, CancellationToken ct) => new("synthetic", DateTimeOffset.UtcNow.AddMinutes(2));
+        public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext context, CancellationToken ct) => ValueTask.FromResult(GetToken(context, ct));
+    }
+    private sealed class ResponsesFixture : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+        {
+            using var doc = JsonDocument.Parse(await req.Content!.ReadAsStringAsync(ct));
+            var input = doc.RootElement.GetProperty("input");
+            if (req.RequestUri?.AbsoluteUri != "https://fixture.openai.azure.com/openai/v1/responses" ||
+                req.Headers.Authorization?.Parameter != "synthetic" || doc.RootElement.GetProperty("store").GetBoolean() ||
+                input[0].GetProperty("role").GetString() != "developer" || !input[0].GetProperty("content").GetString()!.Contains("JSON") ||
+                input[1].GetProperty("role").GetString() != "user" || !input[1].GetProperty("content").GetString()!.Contains("packing checklist"))
+                throw new Exception("Invalid authenticated Responses request or missing JSON-mode instruction in input messages.");
+            return new(System.Net.HttpStatusCode.OK) {
+                Content = new StringContent("""{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"reply\":\"Which step did you test?\"}"}]}]}""", Encoding.UTF8, "application/json")
+            };
+        }
+    }
     internal static async Task Run()
     {
         var root = Directory.CreateTempSubdirectory("interview-synthetic-test-");
@@ -38,6 +62,10 @@ internal static class PrivateStagingChecks
             if (slots.Count(x => x) != 10 || Model(stage.Expires).Reserve(true) || !first.Reserve(false) ||
                 Model(DateTimeOffset.UtcNow.AddSeconds(-1)).Reserve(false))
                 throw new Exception("Parallel, restart, or expired test escaped the persistent model budget.");
+            using var http = new HttpClient(new ResponsesFixture());
+            var fixture = new StagingModel(stage.Expires, root.FullName, "https://fixture.openai.azure.com/", "test-model", Guid.NewGuid(), new FixtureToken());
+            var reply = await new LocalCoach(http, fixture).Call<string>("Ask a follow-up.", new { example = "packing checklist" }, "reply", default);
+            if (reply != "Which step did you test?") throw new Exception("Azure model reply was not used.");
         }
         finally { root.Delete(true); }
     }
