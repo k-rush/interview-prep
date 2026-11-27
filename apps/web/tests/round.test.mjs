@@ -49,6 +49,7 @@ test('a browser can try the fictional sample, confirm evidence, resume a round, 
   await page.getByRole('list',{name:'Chat transcript'}).getByText(story,{exact:true}).waitFor();
   await page.getByRole('link',{name:'New chat',exact:true}).click();
   await page.getByRole('link',{name:'Start a mock interview',exact:true}).click();
+  await page.locator('.thread-heading .badge.mock').waitFor();
   await say('Platform engineer');
   for (const [i, text] of ['I wrote the checklist.', 'We compared two rollout paths.', 'I reviewed support tickets.', 'We practiced then expanded.'].entries()) {
     await page.getByText(`Question ${i + 1} of 4`, { exact: false }).waitFor();
