@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import test from 'node:test';
 import { launchBrowser } from './browser.mjs';
 import { localHost } from '../../../tests/local-host.mjs';
@@ -112,4 +114,50 @@ test('a landing prompt is editable before creating a conversation; keyboard subm
   await page.reload(); await page.getByText('Discuss the rehearsal guide.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Delete memory'}).click();
   await page.getByText(/No memories yet/).waitFor();
+});
+
+test('a live reply is readable before completion, can be stopped upstream, and retries as one saved turn', { timeout: 45_000 }, async t => {
+  let finish, disconnected, calls = 0;
+  const fixture = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    if (!JSON.parse(raw).stream) { res.writeHead(400); res.end(); return; }
+    calls++;
+    disconnected = once(res, 'close');
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const delta = content => res.write(`data: ${JSON.stringify({choices:[{delta:{content}}]})}\n\n`);
+    delta('{"hidden":{"reply":"Internal field"},"turn":{"label":"Private metadata","kind":"none","reply":"Which ');
+    delta(String.raw`\"step\" \uD83D\uD`);
+    finish = () => { delta('D0E did you test?"}}'); res.end('data: [DONE]\n\n'); };
+  });
+  fixture.listen(0, '127.0.0.1'); await once(fixture, 'listening');
+  t.after(() => { fixture.closeAllConnections(); return new Promise(resolve => fixture.close(resolve)); });
+  const app = await localHost(t, fixture.address().port), browser = await launchBrowser(t);
+  const page = await browser.newPage(); page.setDefaultTimeout(8_000);
+  await page.goto(app.url);
+  await page.getByRole('button', { name: 'Open my local workspace' }).click();
+  const input = page.getByLabel('Message your coach'), thread = page.getByRole('list', { name: 'Chat transcript' });
+  const prompt = 'Project: Packing list. I wrote the checklist.';
+  await input.fill(prompt); await input.press('Enter');
+  const partial = thread.getByText('Which "step"', { exact: true });
+  await partial.waitFor();
+  assert.doesNotMatch(await thread.innerText(), /Internal field|Private metadata|\\u/);
+  await page.getByRole('button', { name: 'Stop reply' }).click();
+  await disconnected;
+  await thread.getByText(/Reply stopped/).waitFor();
+  assert.equal(await input.inputValue(), prompt);
+  const read = async path => (await page.request.get(`${app.url}/api/${path}`)).json();
+  const [chat] = await read('chats');
+  const stopped = await read(`chats/${chat.id}`);
+  assert.equal(stopped.session.revision, 0); assert.equal(stopped.messages.length, 1);
+  assert.deepEqual((await read('workspace')).facts, []);
+
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await partial.waitFor();
+  finish();
+  await page.waitForURL(`**/#workspace/chat/${chat.id}`);
+  await thread.getByText(/Which "step" 🔎 did you test\?/).waitFor();
+  const saved = await read(`chats/${chat.id}`);
+  assert.equal(calls, 2); assert.equal(saved.session.revision, 1); assert.equal(saved.messages.length, 3);
+  assert.equal(await thread.locator('li.assistant p').last().textContent(), saved.messages.at(-1).text);
+  assert.deepEqual((await read('workspace')).facts.map(f => f.claim), [prompt]);
 });

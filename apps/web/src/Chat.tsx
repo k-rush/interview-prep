@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { api, RequestError, type Act, type ChatSession, type Workspace } from "./client";
+import { api, RequestError, streamTurn, type Act, type ChatSession, type Workspace } from "./client";
 import { Discovery } from "./Discovery";
 import { VoiceInput } from "./Voice";
 import { DocumentImport } from "./ExperienceDocuments";
 import { Compass, Icon, StarterLabel, chatUrl, modeName, modeIcon, starts } from "./CareerUI";
 
-type Message = { id: string; speaker: string; text: string; mode: string; vote: string | null; nextChatId: string | null };
+type Message = { id: string; speaker: string; text: string; mode: string; vote: string | null; nextChatId: string | null; requestId: string | null };
 type Detail = { session: ChatSession; messages: Message[]; pendingSearch: string | null };
+type Reply = { prompt: string; text: string; state: "writing" | "saved" | "stopped" };
 type Props = { data: Workspace; act: Act; busy: boolean };
 const date = (s: string) => new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; newKind?: string }) {
   const [detail, setDetail] = useState<Detail | null>(null), [text, setText] = useState<string>(() => starts.find(s => s.slug === newKind)?.text ?? ""), [error, setError] = useState("");
-  const [pending, setPending] = useState<string | null>(null);
+  const [reply, setReply] = useState<Reply | null>(null);
+  const pending = !!reply && reply.state !== "stopped";
+  const generation = useRef<AbortController | null>(null), thread = useRef<HTMLDivElement>(null);
   const [attempt, retry] = useState(0);
+  const documentRead = useRef<AbortController | null>(null), [readStopped, setReadStopped] = useState(false);
   const startKey = useRef(crypto.randomUUID()), turnKey = useRef(crypto.randomUUID());
   const mounted = useRef(true), last = useRef<HTMLLIElement>(null), scrollNext = useRef(false), form = useRef<HTMLFormElement>(null), refocus = useRef(false);
   const startMock = newKind === "mock";
@@ -24,11 +28,11 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
       if (mounted.current) location.replace(chatUrl(x.id));
     }).catch(e => { if (mounted.current) setError(e.message); });
     else if (matchMedia("(pointer: fine)").matches) form.current?.querySelector("textarea")?.focus({ preventScroll: true });
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; generation.current?.abort(); };
   }, [id, startMock]);
   useEffect(() => {
-    if (scrollNext.current && last.current) { scrollNext.current = false; last.current.scrollIntoView({block: "nearest"}); }
-  }, [detail, pending]);
+    if (scrollNext.current && last.current) { scrollNext.current = false; last.current.scrollIntoView({block: reply?.text ? "end" : "nearest"}); }
+  }, [detail, reply]);
   useEffect(() => {
     if (!busy && refocus.current) {
       refocus.current = false;
@@ -40,33 +44,67 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
   const pendingImport = session?.stage === "document:pending";
   useEffect(() => {
     if (!id || !pendingImport) return;
-    let live = true; setError("");
-    api(`chats/${id}/import`, "POST").then(() => api<Detail>(`chats/${id}`)).then(d => {
-      if (live) { setDetail(d); void act(async () => {}); }
+    let live = true; setError(""); setReadStopped(false);
+    const controller = new AbortController(); documentRead.current = controller;
+    api(`chats/${id}/import`, "POST", undefined, controller.signal).catch(e => {
+      if (!controller.signal.aborted) throw e;
+      if (live) setReadStopped(true);
+    }).then(() => live ? api<Detail>(`chats/${id}`) : null).then(d => {
+      if (live && d) { setDetail(d); if (d.session.stage !== "document:pending") void act(async () => {}); }
     }).catch(e => {if (live) setError(e.message);});
-    return () => {live=false;};
+    return () => {live=false; controller.abort();};
   }, [id, pendingImport, attempt]);
   const send = (action: "say" | "finish") => {
-    if (pending !== null || busy || action === "say" && !text.trim()) return;
+    if (generation.current || pending || busy || action === "say" && !text.trim()) return;
     void act(async () => {
-      const from = location.hash;
+      const from = location.hash, current = () => mounted.current && location.hash === from;
+      const controller = new AbortController(), { signal } = controller, requestId = turnKey.current;
+      generation.current = controller;
       refocus.current = action === "say"; scrollNext.current = true;
-      setError(""); setPending(action === "say" ? text.trim() : "Finish session");
+      setError(""); setReply({prompt: action === "say" ? text.trim() : "Finish session", text: "", state: "writing"});
       let active = id;
       try {
-        if (!active) active = (await api<{id:string}>("chats", "POST", { requestId: startKey.current })).id;
-        const answer = await api<{id:string}>(`chats/${active}/turns`, "POST", { text, action, requestId: turnKey.current,
-          revision: session?.revision ?? 0, zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" });
-        if (!mounted.current || location.hash !== from) return;
-        turnKey.current = crypto.randomUUID(); setText("");
-        if (id !== answer.id) location.hash = chatUrl(answer.id);
-        else { scrollNext.current = true; setDetail(await api<Detail>(`chats/${id}`)); }
+        if (!active) active = (await api<{id:string}>("chats", "POST", { requestId: startKey.current }, signal)).id;
+        const answer = await streamTurn(active, { text, action, requestId, revision: session?.revision ?? 0,
+          zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }, signal, delta => {
+          if (!current() || signal.aborted) return;
+          if (last.current && thread.current && last.current.getBoundingClientRect().bottom <= thread.current.getBoundingClientRect().bottom + 32)
+            scrollNext.current = true;
+          setReply(r => r && {...r, text: r.text + delta});
+        });
+        if (!current()) return;
+        setReply(r => r && {...r, text: answer.text, state: "saved"});
+        if (id !== answer.id) { location.hash = chatUrl(answer.id); return; }
+        const latest = await api<Detail>(`chats/${id}`, "GET", undefined, signal);
+        if (!current()) return;
+        scrollNext.current = true; setDetail(latest);
+        turnKey.current = crypto.randomUUID(); setText(""); setReply(null);
       } catch (e) {
-        if (active && id && e instanceof RequestError && e.status === 409) {
-          setDetail(await api<Detail>(`chats/${active}`)); turnKey.current = crypto.randomUUID();
+        if (!current()) return;
+        if (signal.aborted) {
+          setReply(r => r && {...r, state: "stopped"});
+          // Stop can race the commit. The saved transcript, not the preview, wins.
+          if (active) {
+            const latest = await api<Detail>(`chats/${active}`);
+            if (!current()) return;
+            const saved = latest.messages.find(m => m.requestId === requestId);
+            if (id) setDetail(latest);
+            if (saved) {
+              setReply(null); setText(""); turnKey.current = crypto.randomUUID();
+              if (id !== (saved.nextChatId ?? active)) location.hash = chatUrl(saved.nextChatId ?? active);
+            }
+          }
+          return;
+        }
+        setReply(null);
+        if (active && e instanceof RequestError && e.status === 409) {
+          const latest = await api<Detail>(`chats/${active}`);
+          if (!current()) return;
+          if (id) setDetail(latest); else location.hash = chatUrl(active);
+          turnKey.current = crypto.randomUUID();
         }
         throw e;
-      } finally { setPending(null); }
+      } finally { generation.current = null; }
     });
   };
   const lastMsg = detail?.messages.at(-1);
@@ -76,12 +114,14 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
   });
   const attachment = <DocumentImport compact change={act} busy={busy}/>;
   const composer = <form ref={form} className="composer" onSubmit={e => { e.preventDefault(); send("say"); }}>
-    <fieldset disabled={busy}><VoiceInput key={pending !== null ? "waiting" : session?.revision ?? 0} label="Message your coach" maxLength={session?.kind === "mock" ? 3000 : 8000}
-      required value={pending !== null ? "" : text} onChange={setText} prompt={lastMsg?.text}
+    {pending ? <div className="composer-toolbar reply-controls"><span role="status">{reply.state === "saved" ? "Reply saved." : reply.text ? "Coach is replying…" : "Waiting for your coach…"}</span>
+      {reply.state === "writing" && <button autoFocus className="quiet" type="button" onClick={() => generation.current?.abort()}>Stop reply</button>}</div> :
+    <fieldset disabled={busy}><VoiceInput key={session?.revision ?? 0} label="Message your coach" maxLength={session?.kind === "mock" ? 3000 : 8000}
+      required value={text} onChange={setText} prompt={lastMsg?.text}
       placeholder={session ? "Reply to your coach…" : "Ask about your job search…"}
-      composer={{ attachment, send: <button className="send" type="submit" aria-label="Send" title="Send (Enter). Shift+Enter for a new line." disabled={!text.trim() || busy}><Icon name="send"/></button> }}/></fieldset>
+      composer={{ attachment, send: <button className="send" type="submit" aria-label="Send" title="Send (Enter). Shift+Enter for a new line." disabled={!text.trim() || busy}><Icon name="send"/></button> }}/></fieldset>}
   </form>;
-  if (!id && !startMock && pending === null) return <div className="chat-page start-canvas"><div className="chat-start">
+  if (!id && !startMock && !reply) return <div className="chat-page start-canvas"><div className="chat-start">
     <div className="chat-hero"><Compass/><p className="eyebrow">Your job search coach</p><h1>What’s your next move?</h1>
       <p className="intro">Tell me about a role, a project, or an interview on your calendar.</p></div>
     {composer}<p className="composer-note">Drop a resume or work sample to start a document chat.</p>
@@ -92,30 +132,34 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
     <p className="privacy-line"><span>Want a scored round instead? <a href="#workspace/new/mock">Start a mock interview</a>.</span></p>
     <p className="composer-note">Work examples can update your job history and <a href="#workspace/memory">agent memory</a>. Only approved facts can go into applications.</p>
   </div></div>;
-  if (!detail && pending === null) return <div className="opening"><Compass/>{error ? <p role="alert">{error} <a href="#workspace">Back to Chat</a></p> :
+  if (!detail && !reply) return <div className="opening"><Compass/>{error ? <p role="alert">{error} <a href="#workspace">Back to Chat</a></p> :
     <p role="status">Opening your conversation…</p>}</div>;
-  return <div className="chat-page chat-thread"><div className="thread-scroll"><div className="thread-column">
+  return <div className="chat-page chat-thread"><div className="thread-scroll" ref={thread}><div className="thread-column">
     {error && <p role="alert" className="error">{error}</p>}
     <div className="thread-heading"><div className="session-info">{session && (session.kind === "mock" || session.kind === "import") && <span className={`badge ${session.kind}`}>
       <Icon name={modeIcon(session.kind)}/>{modeName(session.kind)}</span>}
       {session?.state === "closed" && <small>Finished session</small>}</div>
       <h1>{session?.title ?? "Your conversation"}</h1></div>
-    <ol className="transcript" aria-label="Chat transcript" aria-live="polite" aria-busy={pending !== null}>{detail?.messages.map((m,i) =>
-      <li key={m.id} ref={pending === null && i === detail.messages.length - 1 ? last : null}
+    <ol className="transcript" aria-label="Chat transcript" aria-live="polite" aria-busy={pending}>{detail?.messages.map((m,i) =>
+      <li key={m.id} ref={!reply && i === detail.messages.length - 1 ? last : null}
         className={`${m.speaker} ${m.mode === "scorecard" || m.mode === "report" ? "artifact" : ""}`}>
         {m.speaker === "user" ? <small className="sr-only">You</small> : <div className="speaker"><Compass/>Coach <small>{m.mode}</small></div>}
         <p>{m.text}</p>{m.nextChatId && <a href={chatUrl(m.nextChatId)}>Open that session</a>}</li>)}
-      {pending !== null && <><li className="user"><small className="sr-only">You</small><p>{pending}</p></li>
-        <li ref={last} className="assistant"><div className="speaker" role="status"><Compass/>Working on your reply…</div></li></>}
+      {reply && <><li className="user"><small className="sr-only">You</small><p>{reply.prompt}</p></li>
+        <li ref={last} className="assistant"><div className="speaker"><Compass/>Coach</div>{reply.text && <p>{reply.text}</p>}
+          {reply.state === "stopped" && <small role="status">Reply stopped. This preview isn’t part of the saved conversation.</small>}</li></>}
     </ol>
     {session && <>{session.digestId && <Discovery data={data} act={act} busy={busy} digestId={session.digestId}/>}
       {session.targetId && <a className="button quiet" href={`#workspace/prep/${session.targetId}`}>View interview packet &amp; schedule</a>}
       {session.state === "closed" && session.kind === "mock" && data.mocks.find(m => m.id === id)?.report &&
         <a className="button quiet" href={`#workspace/debrief/${id}`}>Review scorecard, examples &amp; next drill</a>}
-      {session.kind === "import" && (pendingImport ? error ? <button onClick={() => retry(n => n + 1)}>Retry document analysis</button> :
-        <p role="status">Reading the attachment and searching your job history...</p> : <a className="button quiet" href="#workspace/library">Review updated job history</a>)}
+      {session.kind === "import" && (pendingImport ? <>
+        {!error && <p role="status">{readStopped ? "Document analysis stopped. Your attachment is here to retry." : "Reading the attachment and searching your job history..."}</p>}
+        {error || readStopped ? <button onClick={() => retry(n => n + 1)}>Retry document analysis</button> :
+          <button className="quiet" onClick={() => documentRead.current?.abort()}>Stop document analysis</button>}</> :
+        <a className="button quiet" href="#workspace/library">Review updated job history</a>)}
       <div className="session-tools">{session.state !== "closed" && !pendingImport && <button className="text-button" disabled={busy} onClick={() => send("finish")}>Finish session</button>}
-        {lastMsg?.speaker === "assistant" && <details><summary>Rate reply</summary><div className="actions">{["up","down"].map(v =>
+        {!reply && lastMsg?.speaker === "assistant" && <details><summary>Rate reply</summary><div className="actions">{["up","down"].map(v =>
           <button key={v} className="quiet" disabled={busy} aria-pressed={lastMsg.vote === v} onClick={() => rating(lastMsg,v)}>{v === "up" ? "Helpful" : "Unhelpful"}</button>)}</div></details>}
         <details><summary>Session options</summary><a href="#workspace/new/mock">Start a scored mock interview</a>{" · "}<button className="text-button" disabled={busy} onClick={() => {
           if (confirm(session.kind === "import" ? "Forget this chat and any pending attachment or match questions? Filed document evidence stays in Job experience. Follow-up facts sourced only from this chat are removed." :

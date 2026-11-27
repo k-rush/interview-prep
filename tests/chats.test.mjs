@@ -134,3 +134,36 @@ test('an ordinary conversation saves an interview target and books mock blocks o
   const started = await c.json('chats','POST',payload);assert.equal((await c.json('chats','POST',{...payload,requestId:randomUUID()})).id,started.id);
   assert.equal((await c.json(`chats/${started.id}`)).session.targetId,target.id);
 });
+
+test('streamed previews lose to a concurrent committed turn; retries preserve status and idempotency', {timeout:30000}, async t => {
+  let finish, calls = 0;
+  const fixture = createServer(async (req, res) => {
+    for await (const _ of req) {}
+    calls++;
+    res.writeHead(200, {'Content-Type':'text/event-stream'});
+    const delta = content => res.write(`data: ${JSON.stringify({choices:[{delta:{content}}]})}\n\n`);
+    delta('{"turn":{"reply":"Which part');
+    finish = () => { delta(' was yours?","kind":"none","label":""}}'); res.end('data: [DONE]\n\n'); };
+  });
+  fixture.listen(0,'127.0.0.1'); await once(fixture,'listening');
+  t.after(() => {fixture.closeAllConnections();return new Promise(resolve=>fixture.close(resolve));});
+  const app = await localHost(t,fixture.address().port), owner = await app.open(), c = client(app,owner), id = await c.start();
+  const stream = body => app.request(`chats/${id}/turns`,owner,'POST',body,{Accept:'application/x-ndjson'});
+  const events = async res => (await res.text()).trim().split('\n').map(line=>JSON.parse(line));
+  const input = {revision:0, requestId:randomUUID(), text:'Project: Unsaved preview.'};
+  const response = await stream(input);
+  assert.match(response.headers.get('content-type'), /application\/x-ndjson/);
+  const winner = {...input, requestId:randomUUID(), text:'Remember: Keep it short.'};
+  const [done] = await events(await stream(winner));
+  assert.equal(done.type,'done'); assert.equal(done.id,id);
+  finish();
+  const frames = await events(response), error = frames.at(-1);
+  assert.deepEqual(frames[0],{type:'delta',text:'Which part'});
+  assert.equal(error.type,'error'); assert.equal(error.status,409);
+  const detail = await c.json(`chats/${id}`);
+  assert.equal(detail.messages.length,3); assert.equal(detail.messages.at(-1).text,done.text);
+  assert.deepEqual((await app.state(owner)).facts,[]);
+  assert.equal((await stream(input)).status,409);
+  assert.deepEqual(await events(await stream(winner)),[done]);
+  assert.equal(calls,1);
+});

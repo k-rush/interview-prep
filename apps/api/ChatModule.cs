@@ -99,7 +99,7 @@ internal static partial class ChatModule
             var s = await Owned(db, owner).AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
             if (s is null) return Results.NotFound();
             var messages = await db.Set<ChatMessage>().Where(m => m.WorkspaceId == owner && m.ChatId == id)
-                .OrderBy(m => m.Seq).Select(m => new { m.Id, m.Speaker, m.Text, m.Mode, m.NextChatId, m.Vote }).ToArrayAsync(ct);
+                .OrderBy(m => m.Seq).Select(m => new { m.Id, m.Speaker, m.Text, m.Mode, m.NextChatId, m.Vote, m.RequestId }).ToArrayAsync(ct);
             return Results.Ok(new { session = Header(s), messages, s.PendingSearch });
         });
         g.MapPost("", Start);
@@ -173,6 +173,23 @@ internal static partial class ChatModule
     private static async Task<IResult> Turn(Guid id, TurnInput input, HttpContext c, PracticeDb db, LocalCoach coach, PublicResearch research,
         DiscoveryScout scout, CancellationToken ct)
     {
+        string? claimedSearch = null;
+        try
+        {
+            return await ChatTurnStream.Run(c, preview =>
+                RunTurn(id, input, c, db, coach, research, scout, preview, text => claimedSearch = text, ct));
+        }
+        finally
+        {
+            if (ct.IsCancellationRequested && claimedSearch is not null)
+                await Owned(db, Owner(c)).Where(s => s.Id == id && s.Revision == input.Revision && s.PendingSearch == claimedSearch)
+                    .ExecuteUpdateAsync(set => set.SetProperty(s => s.PendingSearch, (string?)null));
+        }
+    }
+
+    private static async Task<IResult> RunTurn(Guid id, TurnInput input, HttpContext c, PracticeDb db, LocalCoach coach, PublicResearch research,
+        DiscoveryScout scout, Func<string, Task>? preview, Action<string> claimSearch, CancellationToken ct)
+    {
         var owner = Owner(c); var text = input.Text?.Trim() ?? "";
         var finish = input.Action == "finish" || Is(text, @"^(?:end|finish|stop) (?:this |my |the )?(?:mock interview|mock|interview|session|chat|job search)[.!]?$");
         var mode = finish ? "finish" : "say";
@@ -187,7 +204,12 @@ internal static partial class ChatModule
         async Task<IResult?> Check()
         {
             var prior = await messages.AsNoTracking().SingleOrDefaultAsync(m => m.RequestId == input.RequestId, ct);
-            if (prior is not null) return prior.Text == text && prior.Mode == mode ? Results.Ok(new { id = prior.NextChatId ?? id }) : Results.Conflict("Turn key already used.");
+            if (prior is not null)
+            {
+                if (prior.Text != text || prior.Mode != mode) return Results.Conflict("Turn key already used.");
+                var saved = preview is null ? null : await messages.Where(m => m.Seq == prior.Seq + 1).Select(m => m.Text).SingleAsync(ct);
+                return new ChatTurnStream.Saved(prior.NextChatId ?? id, saved);
+            }
             if (s.State != "active" || s.Revision != input.Revision) return Results.Conflict("This chat changed. Reload its latest turn.");
             if (s.Revision >= 150 && !finish) return Results.BadRequest("Finish this session and start a new chat.");
             return null;
@@ -210,7 +232,7 @@ internal static partial class ChatModule
         var materials = !finish && planning ? await ChatPlanning.Prepare(s, text, research, coach, ct) : null;
         if (s.PendingSearch is not null && s.PendingSearch != text) return Results.Conflict("A search is in progress. Resume it using the same message.");
         // Keep inference and public feed refreshes outside the SQLite writer.
-        if (s.Kind == "mock") mock = await MockTurn(db, s, text, finish, coach, ct);
+        if (s.Kind == "mock") mock = await MockTurn(db, s, text, finish, coach, preview, ct);
         else if (search?.Role is string searchRole)
         {
             await using (var claim = await db.Database.BeginTransactionAsync(ct))
@@ -221,14 +243,19 @@ internal static partial class ChatModule
                 if (s.PendingSearch is not null && s.PendingSearch != text) return Results.Conflict("A search is already in progress. Resume it using the same message.");
                 s.PendingSearch = text;
                 await db.SaveChangesAsync(ct); await claim.CommitAsync(ct);
+                claimSearch(text);
             }
             (digest, reply) = await scout.ChatReport(owner, searchRole, zone, ct);
             engine = "report";
         }
         else if (finish) reply = "Session closed. Your conversation is saved in history.";
         else if (general && !planRequest && !remember && !startMock && !practiceRequest && !experienceRequest && search is null)
-            builder = await BuilderTurn(db, s, text, coach, ct);
+        {
+            builder = await BuilderTurn(db, s, text, coach, preview, ct);
+            if (preview is not null) await preview(builder.Text);
+        }
 
+        ct.ThrowIfCancellationRequested();
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         await db.Entry(s).ReloadAsync(ct);
         if (db.Entry(s).State == EntityState.Detached) return Results.NotFound();
@@ -296,7 +323,7 @@ internal static partial class ChatModule
             builder?.Recallable == true || planning && materials is null && !reply.Contains("Prep packet", StringComparison.Ordinal);
         s.Revision++; s.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
-        return Results.Ok(new { id = user.NextChatId ?? id });
+        return new ChatTurnStream.Saved(user.NextChatId ?? id, reply);
     }
 
     private static async Task<IResult> Delete(Guid id, HttpContext c, PracticeDb db, CancellationToken ct)

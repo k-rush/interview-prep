@@ -18,6 +18,7 @@ internal sealed class PrivateStaging
     internal required DateTimeOffset Expires { get; init; }
     internal required string Share { get; init; }
     private readonly SemaphoreSlim writes = new(1, 1);
+    internal sealed record WriteCheckpoint(Action Save);
 
     internal static PrivateStaging Configure(WebApplicationBuilder builder, bool container, Uri? origin)
     {
@@ -92,8 +93,11 @@ internal sealed class PrivateStaging
             await writes.WaitAsync(c.RequestAborted);
             try
             {
+                var checkpoint = new WriteCheckpoint(() => Checkpoint(database));
+                c.Features.Set(checkpoint);
                 c.Response.OnStarting(() => {
-                    if (c.Response.StatusCode < 400) Checkpoint(database);
+                    // A chat preview precedes the transaction; its terminal frame checkpoints after commit.
+                    if (c.Response.StatusCode < 400 && c.Response.ContentType != ChatTurnStream.MediaType) checkpoint.Save();
                     return Task.CompletedTask;
                 });
                 await next();

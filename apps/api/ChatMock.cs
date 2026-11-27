@@ -16,7 +16,10 @@ internal static partial class ChatModule
         return "Question 1 of 4 · Ownership\n" + questions[0];
     }
 
-    private static async Task<MockReply> MockTurn(PracticeDb db, ChatSession s, string text, bool finish, LocalCoach coach, CancellationToken ct)
+    private static string QuestionHeading(int i) => $"Question {i + 1} of 4 · {Practice.Probes[i].Name}\n";
+
+    private static async Task<MockReply> MockTurn(PracticeDb db, ChatSession s, string text, bool finish, LocalCoach coach,
+        Func<string, Task>? preview, CancellationToken ct)
     {
         if (s.Stage == "open") return finish ? new(Finish: true) : text.Length <= 2000 ? new(Start: true) : new(Invalid: "Use at most 2,000 characters for the role.");
         var m = await db.Mocks.AsNoTracking().SingleOrDefaultAsync(m => m.WorkspaceId == s.WorkspaceId && m.Id == s.Id, ct);
@@ -26,7 +29,8 @@ internal static partial class ChatModule
         var answers = m.Answers().Append(text).ToArray(); var i = answers.Length;
         if (i > 4) return new(Invalid: "This round already has four answers.");
         if (i == 4) return new(Marks: Model ? await coach.Assess(m.Target, m.Questions(), answers, ct) : null);
-        return new(Next: Model ? await coach.NextQuestion(ChatRecall.Clip(m.Target, 1800), m.Questions()[i - 1], text, Practice.Probes[i], ct) : null);
+        return new(Next: Model ? await coach.NextQuestion(ChatRecall.Clip(m.Target, 1800), m.Questions()[i - 1], text, Practice.Probes[i], ct,
+            preview is null ? null : question => preview(QuestionHeading(i) + question)) : null);
     }
 
     private static async Task<(string Reply, string Mode, bool Closed)> ApplyMock(PracticeDb db, ChatSession s, string text, MockReply action, CancellationToken ct)
@@ -49,7 +53,7 @@ internal static partial class ChatModule
         {
             var i = answers.Length; var qs = m.Questions();
             if (action.Next is not null) { qs[i] = action.Next; m.QuestionsJson = JsonSerializer.Serialize(qs); }
-            return ($"Question {i + 1} of 4 · {Practice.Probes[i].Name}\n{qs[i]}", action.Next is not null ? LocalCoach.Label : "standard probe", false);
+            return (QuestionHeading(i) + qs[i], action.Next is not null ? LocalCoach.Label : "standard probe", false);
         }
         if (Model) db.Add(new QualityCheck { MockId = m.Id, Check = "rubric-and-exact-transcript-citations", Passed = action.Marks is not null });
         var report = Practice.Assess(action.Marks is null ? PracticeScreen.Assessor : LocalCoach.Assessor, action.Marks ?? PracticeScreen.Review(answers));
