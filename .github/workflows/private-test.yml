@@ -53,7 +53,7 @@ jobs:
             --tag "$image:git-$GITHUB_SHA" --metadata-file "$RUNNER_TEMP/image.json" --push .
           digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/image.json")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          printf 'Reviewed commit: `%s`\n\nDigest: `%s`\n' "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Reviewed commit: %s\n\nDigest: %s\n' "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - name: Replace the single writer in the existing private test only
         if: ${{ !inputs.publish_only }}
         env:
