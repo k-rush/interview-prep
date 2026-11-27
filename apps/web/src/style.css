@@ -132,6 +132,7 @@ small, .muted, .minor-link, .privacy-line { font-size: .84rem; color: var(--mute
 .composer textarea { field-sizing: content; min-height: 3rem; max-height: min(10rem, 24dvh); margin: 0; padding: .3rem .4rem .6rem; border: 0; resize: none; background: transparent; font-weight: 400; }
 .composer textarea:focus { outline: none; }
 .composer-toolbar { display: flex; align-items: flex-end; gap: .2rem; }
+.reply-controls { align-items: center; justify-content: space-between; gap: .75rem; color: var(--muted); font-size: .9rem; }
 .composer-tool { min-height: 2.55rem; padding: .45rem .6rem; border: 0; border-radius: .6rem; background: transparent; color: #49564d; font-size: .8rem; font-weight: 580; }
 .composer-tool:not(:disabled):hover, .composer-tool[aria-expanded="true"] { background: var(--rail); }
 .send { width: 2.6rem; min-height: 2.6rem; border-radius: 50%; margin-left: auto; padding: 0; }

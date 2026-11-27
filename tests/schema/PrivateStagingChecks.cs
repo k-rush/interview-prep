@@ -23,8 +23,21 @@ internal static class PrivateStagingChecks
                 input[0].GetProperty("role").GetString() != "developer" || !input[0].GetProperty("content").GetString()!.Contains("JSON") ||
                 input[1].GetProperty("role").GetString() != "user" || !input[1].GetProperty("content").GetString()!.Contains("packing checklist"))
                 throw new Exception("Invalid authenticated Responses request or missing JSON-mode instruction in input messages.");
+            const string output = """{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"reply\":\"Which step did you test?\"}"}]}]}""";
+            if (doc.RootElement.GetProperty("stream").GetBoolean())
+            {
+                var frames = new[] {
+                    """{"type":"response.reasoning_text.delta","delta":"internal reasoning"}""",
+                    """{"type":"response.output_text.delta","delta":"{\"reply\":\"Which step"}""",
+                    """{"type":"response.output_text.delta","delta":" did you test?\"}"}""",
+                    """{"type":"response.completed","response":""" + output + "}"
+                };
+                return new(System.Net.HttpStatusCode.OK) {
+                    Content = new StringContent(string.Concat(frames.Select(f => "data: " + f + "\n\n")), Encoding.UTF8, "text/event-stream")
+                };
+            }
             return new(System.Net.HttpStatusCode.OK) {
-                Content = new StringContent("""{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"reply\":\"Which step did you test?\"}"}]}]}""", Encoding.UTF8, "application/json")
+                Content = new StringContent(output, Encoding.UTF8, "application/json")
             };
         }
     }
@@ -64,8 +77,13 @@ internal static class PrivateStagingChecks
                 throw new Exception("Parallel, restart, or expired test escaped the persistent model budget.");
             using var http = new HttpClient(new ResponsesFixture());
             var fixture = new StagingModel(stage.Expires, root.FullName, "https://fixture.openai.azure.com/", "test-model", Guid.NewGuid(), new FixtureToken());
-            var reply = await new LocalCoach(http, fixture).Call<string>("Ask a follow-up.", new { example = "packing checklist" }, "reply", default);
+            var coach = new LocalCoach(http, fixture);
+            var reply = await coach.Call<string>("Ask a follow-up.", new { example = "packing checklist" }, "reply", default);
             if (reply != "Which step did you test?") throw new Exception("Azure model reply was not used.");
+            var previews = new List<string>();
+            var result = await coach.Call<string>("Ask a follow-up.", new { example = "packing checklist" }, "reply", default, 48, null,
+                ModelReplyStream.For(s => { previews.Add(s); return Task.CompletedTask; }, "reply", 160));
+            if (result != reply || !previews.SequenceEqual(["Which step", reply])) throw new Exception("Azure streamed something other than the reply.");
         }
         finally { root.Delete(true); }
     }

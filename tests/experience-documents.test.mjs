@@ -80,9 +80,12 @@ test('local PDF, DOCX and text previews let the candidate select and redact with
   assert.ok(serves.every(([method]) => method === 'GET'), 'preview must read local scripts only, not post any file or excerpt');
 });
 
-test('dropping a document files its summary and cited history without intake fields; pasted links stay bookmarks', async t => {
+test('dropping a document files its summary and cited history without intake fields; pasted links stay bookmarks', {timeout:120_000}, async t => {
+  let reading;
+  const started = new Promise(resolve => { reading = resolve; });
   const model = createServer(async (req, res) => {
     let body = ''; for await (const part of req) body += part;
+    if (reading) { reading(); reading = null; return; }
     const { read_attachment } = JSON.parse(JSON.parse(body).messages[1].content);
     const entries = read_attachment.map(({line, text}) => text.includes('Project Cedar') ? { line, kind:'project', label:'Project Cedar' } :
       { line, kind:'statement', label:'' });
@@ -119,6 +122,11 @@ test('dropping a document files its summary and cited history without intake fie
     el.dispatchEvent(new DragEvent('drop', {bubbles:true,cancelable:true,dataTransfer}));
   }, Array.from(zip));
   await page.waitForURL('**/#workspace/chat/*');
+  await started;
+  await page.getByRole('button',{name:'Stop document analysis'}).click();
+  await page.getByText(/Document analysis stopped/).waitFor();
+  assert.deepEqual((await app.state(cookie)).facts, []);
+  await page.getByRole('button',{name:'Retry document analysis'}).click();
   await page.getByRole('list',{name:'Chat transcript'}).getByText(/I searched your job history/).waitFor();
   await page.getByRole('link',{name:'Review updated job history'}).click();
   await page.getByText('AI summary: Team notes about Project Cedar and its checklist.',{exact:true}).waitFor();

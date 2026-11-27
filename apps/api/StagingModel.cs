@@ -50,20 +50,27 @@ public sealed class StagingModel
         return false;
     }
 
-    internal async Task<string?> Complete(HttpClient http, string instruction, object packet, int maxTokens, CancellationToken ct)
+    internal async Task<string?> Complete(HttpClient http, string instruction, object packet, int maxTokens, ModelReplyStream? stream, CancellationToken ct)
     {
         using var response = await Send(http, new {
-            model = Deployment, store = false,
+            model = Deployment, store = false, stream = stream is not null,
             input = new[] { new { role = "developer", content = instruction + "\nReturn valid JSON." },
                 new { role = "user", content = JsonSerializer.Serialize(packet) } },
             text = new { format = new { type = "json_object" } },
             reasoning = new { effort = "low" }, max_output_tokens = Math.Clamp(maxTokens + 700, 800, 1800)
         }, false, ct);
         if (!response.IsSuccessStatusCode) return null;
+        if (stream != null && response.Content.Headers.ContentType?.MediaType == "text/event-stream")
+            return await stream.Read(response.Content, true, ct);
         await response.Content.LoadIntoBufferAsync(131072, ct);
         using var doc = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync(ct));
-        if (doc.RootElement.GetProperty("status").GetString() != "completed") return null;
-        return doc.RootElement.GetProperty("output").EnumerateArray().Where(o => o.GetProperty("type").GetString() == "message" &&
+        return Output(doc.RootElement);
+    }
+
+    internal static string? Output(JsonElement response)
+    {
+        if (response.GetProperty("status").GetString() != "completed") return null;
+        return response.GetProperty("output").EnumerateArray().Where(o => o.GetProperty("type").GetString() == "message" &&
             o.GetProperty("role").GetString() == "assistant").SelectMany(o => o.GetProperty("content").EnumerateArray())
             .Where(item => item.GetProperty("type").GetString() == "output_text").Select(item => item.GetProperty("text").GetString()).FirstOrDefault();
     }
