@@ -81,10 +81,20 @@ $settings = @{
         oauth2PermissionScopes = @(@{id=$scope;value='access_as_user';type='User';isEnabled=$true
             adminConsentDisplayName='Use the synthetic workspace';adminConsentDescription='Access this isolated test as the signed-in user.'
             userConsentDisplayName='Use the synthetic workspace';userConsentDescription='Access this isolated test as you.'})
-        preAuthorizedApplications = @(@{appId='04b07795-8ddb-461a-bbee-02f9e1bf7b46';delegatedPermissionIds=@($scope)})
     }
 }
 $null = Invoke-RestMethod $appUri -Method Patch -Authentication Bearer -Token $graph -ContentType application/json -Body ($settings | ConvertTo-Json -Depth 10)
+# Graph validates preauthorization against already-persisted scopes, not sibling fields in a PATCH.
+$preauthorize = @{api=@{preAuthorizedApplications=@(@{appId='04b07795-8ddb-461a-bbee-02f9e1bf7b46';delegatedPermissionIds=@($scope)})}} | ConvertTo-Json -Depth 8
+for ($attempt=0; ; $attempt++) {
+    try {
+        $null = Invoke-RestMethod $appUri -Method Patch -Authentication Bearer -Token $graph -ContentType application/json -Body $preauthorize
+        break
+    } catch {
+        if ($attempt -ge 5 -or $_.ErrorDetails.Message -notmatch 'Permission Id that cannot be found') { throw }
+        Start-Sleep -Seconds 3
+    }
+}
 $password = Invoke-RestMethod "$appUri/addPassword" -Method Post -Authentication Bearer -Token $graph -ContentType application/json -Body (
     @{passwordCredential=@{displayName='24-hour staging sign-in';endDateTime=$expires}} | ConvertTo-Json)
 # Send secure parameters in-process, never through child-process arguments, parameter files, or GitHub.
