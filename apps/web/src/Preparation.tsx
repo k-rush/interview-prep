@@ -35,35 +35,30 @@ function calendar(blocks: Block[]) {
 export function PreparationView({ data, act, busy, initialTarget }: { data: Workspace; act: Act; busy: boolean; initialTarget?: string }) {
   const [targets, setTargets] = useState<Target[]>([]), [id, select] = useState(""), [err, setErr] = useState("");
   const [jd, setJd] = useState("");
-  const [role,setRole]=useState(""), [company,setCompany]=useState(""), [link,setLink]=useState(""), [source,setSource]=useState("");
   const load = async () => { const rows = await api<Target[]>("targets"); setTargets(rows); return rows; };
   useEffect(() => { let live = true; api<Target[]>("targets").then(rows => { if (live) {
     setTargets(rows); select(initialTarget && rows.some(t=>t.id===initialTarget) ? initialTarget : rows[0]?.id ?? "");
   } }).catch(e => setErr(e.message)); return () => { live = false; }; }, [initialTarget]);
   const target = targets.find(t => t.id === id);
-  return <><p className="eyebrow">Your preparation</p><h1>Schedule</h1>
-    <p className="intro">Work back from interview day. <a href="#workspace/new/plan">Plan it with your coach</a> or edit the details here.</p>
-    <div className="utility-links"><a href="#workspace/live">Live reminders</a><a href="#workspace/jobs">Daily job search</a></div>
+  return <><p className="eyebrow">Interview preparation</p><h1>Schedule</h1>
+    <p className="intro">Work back from interview day. Set aside practice time for a specific role and round.</p>
+    <div className="actions"><a className="button" href="#workspace/new/plan">Plan it with your coach</a><a className="button quiet" href="#workspace/live">Live reminders</a></div>
     {err && <p role="alert">{err}</p>}
+    <section><h2>Interview targets</h2><p className="muted">Keep the role, company research, and practice blocks for each interview together.</p>
     <details><summary>Add an interview target</summary><form onSubmit={e => {
       e.preventDefault(); const form = e.currentTarget, input = values(form);
-      void act(async () => { const result = await api<{ id: string }>("targets", "POST", input); await load(); select(result.id); setJd(""); setRole(""); setCompany(""); setLink(""); setSource(""); form.reset(); });
+      void act(async () => { const result = await api<{ id: string }>("targets", "POST", input); await load(); select(result.id); setJd(""); form.reset(); });
     }}>
-      <label>Target role<input required name="role" value={role} onChange={e=>setRole(e.target.value)} maxLength={160} /></label>
-      <label>Public company name (optional)<input name="company" value={company} onChange={e=>setCompany(e.target.value)} maxLength={100} /></label>
+      <label>Target role<input required name="role" maxLength={160} /></label>
+      <label>Public company name (optional)<input name="company" maxLength={100} /></label>
       <div className="columns"><label>Level<input required name="level" defaultValue="Mid-career" maxLength={80} /></label>
         <label>Interview round<input required name="round" defaultValue="Hiring manager" maxLength={80} /></label></div>
       <label>Job description or goal<textarea name="description" value={jd} onChange={e => setJd(e.target.value)} maxLength={12000} /></label>
       <DocumentPreview label="Load a job description from a file" maxLength={12000} disabled={busy} onUse={text=>setJd(text)}/>
-      <label>Original job URL (optional bookmark, never fetched automatically)<input type="url" name="jobUrl" value={link} onChange={e=>{setLink(e.target.value);setSource("");}} maxLength={1500} /></label>
-      <button type="button" className="quiet" disabled={!link||busy} onClick={()=>void act(async()=>{
-        const hit=await api<{role:string;company:string;description:string;source:string}>("targets/lookup","POST",{jobUrl:link});
-        setRole(hit.role);setCompany(hit.company);setJd(hit.description);setSource(hit.source);
-      })}>Fill from a followed job board</button><small> Uses only approved Greenhouse or Lever feeds. Review the result before saving.</small>
-      {source && <p role="status">{source}</p>}
+      <label>Original job URL (optional bookmark, never fetched automatically)<input type="url" name="jobUrl" maxLength={1500} /></label>
       <button disabled={busy}>Save target</button>
     </form></details>
-    {!!targets.length && <TargetPicker targets={targets} id={id} select={select} />}
+    {!!targets.length && <TargetPicker targets={targets} id={id} select={select} />}</section>
     {target && <TargetPanel key={target.id} target={target} data={data} act={act} busy={busy} reload={load} />}
   </>;
 }

@@ -10,6 +10,7 @@ if (($Command -eq 'eval' -and $Lane -ne 'replay') -or ($Command -ne 'eval' -and 
 }
 $previousRoot = $env:INTERVIEW_PREP_WEBROOT
 $previousBuild = $env:INTERVIEW_PREP_BUILD
+$previousJobIndex = $env:INTERVIEW_PREP_HN_JOB_SEARCH
 $modelSettings = @{}
 foreach ($k in 'INTERVIEW_PREP_MODEL_PORT','INTERVIEW_PREP_MODEL_KEY_FILE','INTERVIEW_PREP_MODEL_ID') { $modelSettings[$k] = [Environment]::GetEnvironmentVariable($k) }
 Push-Location $PSScriptRoot
@@ -29,6 +30,7 @@ try {
     dotnet build $project -c $configuration -p:RestoreLockedMode=true --nologo --verbosity quiet
     switch ($Command) {
         'up'   {
+            if ($null -eq $previousJobIndex) { $env:INTERVIEW_PREP_HN_JOB_SEARCH = '1' }
             $installed = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'InterviewPrep' 'inference' 'server.key'
             if (!$env:INTERVIEW_PREP_MODEL_PORT -and (Test-Path -LiteralPath $installed)) { & (Join-Path $PSScriptRoot 'scripts' 'model.ps1') connect }
             dotnet run --no-build --no-launch-profile --project $project
@@ -45,5 +47,6 @@ try {
     Pop-Location
     $env:INTERVIEW_PREP_WEBROOT = $previousRoot
     $env:INTERVIEW_PREP_BUILD = $previousBuild
+    $env:INTERVIEW_PREP_HN_JOB_SEARCH = $previousJobIndex
     foreach ($k in $modelSettings.Keys) { [Environment]::SetEnvironmentVariable($k, $modelSettings[$k]) }
 }

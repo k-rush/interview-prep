@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Act } from "./client";
 import type { Passage } from "./ExperienceDocumentReader";
+import { Icon } from "./CareerUI";
 
 async function readLocalDocument(file: File, signal: AbortSignal): Promise<Passage[]> {
   const localModule = new URL("./assets/experience-reader.js", document.baseURI).href;
@@ -21,10 +22,11 @@ export function DocumentImport({ change, busy, compact = false }: { change: Act;
   useEffect(() => {
     if (!compact) return;
     const chat = region.current?.closest<HTMLElement>(".chat-page");
-    const over = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); };
-    const drop = (e: DragEvent) => { if (e.dataTransfer?.files.length) { e.preventDefault(); submitRef.current(Array.from(e.dataTransfer.files)); } };
-    chat?.addEventListener("dragover", over); chat?.addEventListener("drop", drop);
-    return () => { chat?.removeEventListener("dragover", over); chat?.removeEventListener("drop", drop); };
+    const over = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) { e.preventDefault(); setDragging(true); } };
+    const leave = (e: DragEvent) => { if (!(e.relatedTarget instanceof Node) || !chat?.contains(e.relatedTarget)) setDragging(false); };
+    const drop = (e: DragEvent) => { setDragging(false); if (e.dataTransfer?.files.length) { e.preventDefault(); submitRef.current(Array.from(e.dataTransfer.files)); } };
+    chat?.addEventListener("dragover", over); chat?.addEventListener("dragleave", leave); chat?.addEventListener("drop", drop);
+    return () => { chat?.removeEventListener("dragover", over); chat?.removeEventListener("dragleave", leave); chat?.removeEventListener("drop", drop); };
   }, [compact]);
   function submit(items: (File | string)[]) {
     if (!items.length || busy || active.current) return;
@@ -67,12 +69,14 @@ export function DocumentImport({ change, busy, compact = false }: { change: Act;
         const droppedText = e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("text/uri-list");
         submit(files.length ? files : droppedText.trim() ? [droppedText] : []);
       }}>
-      {!compact && <><h2>Drop a document here</h2>
+      {!compact && <><span className="intent-icon builder"><Icon name="upload"/></span><h2>Drop a document here</h2>
       <p>A new chat will read it, search your job history, and show what was added or matched.</p></>}
-      <button type="button" className={compact ? "quiet" : undefined} disabled={busy} onClick={() => picker.current?.click()}>{compact ? "Attach a document" : "Choose file"}</button>
+      <button type="button" className={compact ? "composer-tool" : "quiet"} disabled={busy}
+        aria-label={compact ? "Attach a document" : undefined} title={compact ? "Attach a document in a new chat" : undefined}
+        onClick={() => picker.current?.click()}>{compact ? <><Icon name="attach"/>Attach</> : "Choose file"}</button>
       <input hidden ref={picker} type="file" aria-label="Choose an experience document" accept=".pdf,.docx,.txt,.md,.csv" disabled={busy}
         onChange={e => { const files = Array.from(e.currentTarget.files ?? []); e.currentTarget.value = ""; submit(files); }} />
-      <small>{compact ? "Drop a file here to start a new chat. Your local AI reads the text." : "Text PDF, DOCX, TXT, Markdown or CSV. Up to 3 MiB and 100,000 characters."}</small>
+      {!compact && <small>Text PDF, DOCX, TXT, Markdown or CSV. Up to 3 MiB and 100,000 characters.</small>}
     </div>
     {!compact && <><p className="privacy-line">Share only text you can use with your local AI. The original file is not kept. New statements need review before use in drafts or live reminders.</p>
     <details><summary>Paste text or a link instead</summary>

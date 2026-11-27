@@ -1,47 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import { api, RequestError, type Act, type Workspace } from "./client";
+import { api, RequestError, type Act, type ChatSession, type Workspace } from "./client";
 import { Discovery } from "./Discovery";
 import { VoiceInput } from "./Voice";
 import { DocumentImport } from "./ExperienceDocuments";
+import { Compass, Icon, StarterLabel, chatUrl, modeName, modeIcon, starts } from "./CareerUI";
 
-type Kind = "builder" | "mock" | "scout" | "plan";
-type Session = { id: string; kind: Kind | "import"; title: string; state: string; revision: number; stage: string; updatedAt: string; targetId: string | null; digestId: string | null };
 type Message = { id: string; speaker: string; text: string; mode: string; vote: string | null; nextChatId: string | null };
-type Detail = { session: Session; messages: Message[]; pendingSearch: string | null };
+type Detail = { session: ChatSession; messages: Message[]; pendingSearch: string | null };
 type Props = { data: Workspace; act: Act; busy: boolean };
-const modes: Record<Kind, [string, string]> = {
-  builder: ["Build experience", "Turn a story into evidence"], mock: ["Mock interview", "Practice a hiring-manager round"],
-  scout: ["Find jobs", "Match roles to your experience"], plan: ["Plan an interview", "Make time for the right practice"]
-};
 const date = (s: string) => new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const chatUrl = (id: string) => `#workspace/chat/${id}`;
-const modeName = (kind: Session["kind"]) => kind === "import" ? "Document import" : modes[kind][0];
-
-function Starters({ small = false }: { small?: boolean }) {
-  return <div className={small ? "utility-links" : "starters"}>{(Object.entries(modes) as [Kind, [string, string]][]).map(([kind, [title, subtitle]]) =>
-    <a href={`#workspace/new/${kind}`} key={kind}>{!small && <span className={`mode-dot ${kind}`} aria-hidden="true"/>}
-      <strong>{title}</strong>{!small && <small>{subtitle}</small>}</a>)}</div>;
-}
 
 export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; newKind?: string }) {
-  const [detail, setDetail] = useState<Detail | null>(null), [text, setText] = useState(""), [error, setError] = useState("");
-  const [sending, setSending] = useState(false), [recent, setRecent] = useState<Session[]>([]);
+  const [detail, setDetail] = useState<Detail | null>(null), [text, setText] = useState<string>(() => starts.find(s => s.slug === newKind)?.text ?? ""), [error, setError] = useState("");
+  const [pending, setPending] = useState<string | null>(null);
   const [attempt, retry] = useState(0);
   const startKey = useRef(crypto.randomUUID()), turnKey = useRef(crypto.randomUUID());
-  const last = useRef<HTMLLIElement>(null), scrollNext = useRef(false);
-  const kind: Kind = newKind && Object.hasOwn(modes, newKind) ? newKind as Kind : "builder";
+  const mounted = useRef(true), last = useRef<HTMLLIElement>(null), scrollNext = useRef(false), form = useRef<HTMLFormElement>(null), refocus = useRef(false);
+  const startMock = newKind === "mock";
   useEffect(() => {
-    let live = true;
-    if (id) api<Detail>(`chats/${id}`).then(x => { if (live) { scrollNext.current = x.messages.length > 1; setDetail(x); if (x.pendingSearch) setText(x.pendingSearch); } }).catch(e => { if (live) setError(e.message); });
-    else if (newKind) api<{id: string}>("chats", "POST", {kind, requestId: startKey.current}).then(x => {
-      if (live) location.replace(chatUrl(x.id));
-    }).catch(e => { if (live) setError(e.message); });
-    else api<Session[]>("chats").then(x => { if (live) setRecent(x.slice(0, 3)); }).catch(e => { if (live) setError(e.message); });
-    return () => { live = false; };
-  }, [id, newKind, kind]);
+    mounted.current = true;
+    if (id) api<Detail>(`chats/${id}`).then(x => { if (mounted.current) { scrollNext.current = x.messages.length > 1; setDetail(x); if (x.pendingSearch) setText(x.pendingSearch); } }).catch(e => { if (mounted.current) setError(e.message); });
+    else if (startMock) api<{id: string}>("chats", "POST", {kind:"mock", requestId: startKey.current}).then(x => {
+      if (mounted.current) location.replace(chatUrl(x.id));
+    }).catch(e => { if (mounted.current) setError(e.message); });
+    else if (matchMedia("(pointer: fine)").matches) form.current?.querySelector("textarea")?.focus({ preventScroll: true });
+    return () => { mounted.current = false; };
+  }, [id, startMock]);
   useEffect(() => {
-    if (scrollNext.current && detail) { scrollNext.current = false; last.current?.scrollIntoView({block: "nearest"}); }
-  }, [detail]);
+    if (scrollNext.current && last.current) { scrollNext.current = false; last.current.scrollIntoView({block: "nearest"}); }
+  }, [detail, pending]);
+  useEffect(() => {
+    if (!busy && refocus.current) {
+      refocus.current = false;
+      if (document.activeElement === document.body || form.current?.contains(document.activeElement))
+        form.current?.querySelector("textarea")?.focus({preventScroll:true});
+    }
+  }, [busy]);
   const session = detail?.session;
   const pendingImport = session?.stage === "document:pending";
   useEffect(() => {
@@ -53,14 +47,17 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
     return () => {live=false;};
   }, [id, pendingImport, attempt]);
   const send = (action: "say" | "finish") => {
-    if (sending || busy || action === "say" && !text.trim()) return;
+    if (pending !== null || busy || action === "say" && !text.trim()) return;
     void act(async () => {
-      setError(""); setSending(true);
+      const from = location.hash;
+      refocus.current = action === "say"; scrollNext.current = true;
+      setError(""); setPending(action === "say" ? text.trim() : "Finish session");
       let active = id;
       try {
-        if (!active) active = (await api<{id:string}>("chats", "POST", { kind, requestId: startKey.current })).id;
+        if (!active) active = (await api<{id:string}>("chats", "POST", { requestId: startKey.current })).id;
         const answer = await api<{id:string}>(`chats/${active}/turns`, "POST", { text, action, requestId: turnKey.current,
           revision: session?.revision ?? 0, zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" });
+        if (!mounted.current || location.hash !== from) return;
         turnKey.current = crypto.randomUUID(); setText("");
         if (id !== answer.id) location.hash = chatUrl(answer.id);
         else { scrollNext.current = true; setDetail(await api<Detail>(`chats/${id}`)); }
@@ -69,7 +66,7 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
           setDetail(await api<Detail>(`chats/${active}`)); turnKey.current = crypto.randomUUID();
         }
         throw e;
-      } finally { setSending(false); }
+      } finally { setPending(null); }
     });
   };
   const lastMsg = detail?.messages.at(-1);
@@ -77,72 +74,86 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
     await api(`chats/${id}/feedback/${m.id}`, "PUT", { vote: m.vote === vote ? null : vote });
     setDetail(await api<Detail>(`chats/${id}`));
   });
-  const composer = <form className={session ? "composer in-session" : "composer"} onSubmit={e => { e.preventDefault(); send("say"); }}>
-    <fieldset disabled={busy}>{sending ? <p role="status" className="muted">Working on your reply…</p> : <VoiceInput compact key={session?.revision ?? 0} label="Message your coach" maxLength={session?.kind === "mock" ? 3000 : 8000}
-      required value={text} onChange={setText} prompt={lastMsg?.text} />}
-      <button className="send" disabled={!text.trim() || busy}>{sending ? "Sending…" : "Send"}</button></fieldset>
+  const attachment = <DocumentImport compact change={act} busy={busy}/>;
+  const composer = <form ref={form} className="composer" onSubmit={e => { e.preventDefault(); send("say"); }}>
+    <fieldset disabled={busy}><VoiceInput key={pending !== null ? "waiting" : session?.revision ?? 0} label="Message your coach" maxLength={session?.kind === "mock" ? 3000 : 8000}
+      required value={pending !== null ? "" : text} onChange={setText} prompt={lastMsg?.text}
+      placeholder={session ? "Reply to your coach…" : "Ask about your job search…"}
+      composer={{ attachment, send: <button className="send" type="submit" aria-label="Send" title="Send (Enter). Shift+Enter for a new line." disabled={!text.trim() || busy}><Icon name="send"/></button> }}/></fieldset>
   </form>;
-  return <div className="chat-page"><div className="section-line"><p className="eyebrow">Coach studio</p>
-    <div className="utility-links"><a href="#workspace/history">History</a>{id && <a href="#workspace">New chat</a>}</div></div>
+  if (!id && !startMock && pending === null) return <div className="chat-page start-canvas"><div className="chat-start">
+    <div className="chat-hero"><Compass/><p className="eyebrow">Your job search coach</p><h1>What’s your next move?</h1>
+      <p className="intro">Tell me about a role, a project, or an interview on your calendar.</p></div>
+    {composer}<p className="composer-note">Drop a resume or work sample to start a document chat.</p>
+    <div className="starter-heading"><span/>Try a prompt · edit it or send it<span/></div>
+    <div className="starters">{starts.map(s => <button key={s.slug} className="intent" type="button" onClick={() => {
+      setText(s.text); form.current?.querySelector("textarea")?.focus();
+    }}><StarterLabel {...s}/></button>)}</div>
+    <p className="privacy-line"><span>Want a scored round instead? <a href="#workspace/new/mock">Start a mock interview</a>.</span></p>
+    <p className="composer-note">Work examples can update your job history and <a href="#workspace/memory">agent memory</a>. Only approved facts can go into applications.</p>
+  </div></div>;
+  if (!detail && pending === null) return <div className="opening"><Compass/>{error ? <p role="alert">{error} <a href="#workspace">Back to Chat</a></p> :
+    <p role="status">Opening your conversation…</p>}</div>;
+  return <div className="chat-page chat-thread"><div className="thread-scroll"><div className="thread-column">
     {error && <p role="alert" className="error">{error}</p>}
-    {!id && !newKind ? <>
-      <div className="chat-hero"><span className="coach-mark" aria-hidden="true">✳</span><h1>What are you preparing for?</h1>
-        <p className="intro">Tell me about your work, or pick a place to start.</p></div>
-      {composer}<Starters/><p className="privacy-line">{data.localCoachEnabled ? "Local AI" : "Offline guide"} · Chat can recall your saved conversations and evidence. Only reviewed facts can go into applications.</p>
-      {recent.length > 0 && <div className="recents"><h2>Pick up where you left off</h2>{recent.map(s => <a key={s.id} href={chatUrl(s.id)}>
-        <span>{s.title}</span><small>{date(s.updatedAt)}</small></a>)}</div>}
-    </> : !detail ? !error && <p role="status">Opening your conversation…</p> : session && <>
-      <h1 className="session-title">{session.title}</h1>
-      <div className="session-info"><span className="badge">{modeName(session.kind)}</span>
-        <span>{session.state === "closed" ? "Finished" : data.localCoachEnabled ? "Local AI · private session" : "Offline guide"}</span></div>
-      {session.kind === "scout" && <a className="minor-link" href="#workspace/jobs">Sources &amp; daily search settings</a>}
-      <ol className="transcript" aria-label="Chat transcript">{detail.messages.map((m,i) =>
-        <li key={m.id} ref={i === detail.messages.length - 1 ? last : null} className={`${m.speaker} ${m.mode === "scorecard" || m.mode === "report" ? "artifact" : ""}`}>
-          <small>{m.speaker === "user" ? "You" : `Coach · ${m.mode}`}</small><p>{m.text}</p>
-          {m.nextChatId && <a href={chatUrl(m.nextChatId)}>Open that session</a>}</li>)}</ol>
-      {session.digestId && <Discovery data={data} act={act} busy={busy} digestId={session.digestId}/>}
-      {session.targetId && <a className="minor-link" href={`#workspace/prep/${session.targetId}`}>View interview packet &amp; schedule</a>}
+    <div className="thread-heading"><div className="session-info">{session && (session.kind === "mock" || session.kind === "import") && <span className={`badge ${session.kind}`}>
+      <Icon name={modeIcon(session.kind)}/>{modeName(session.kind)}</span>}
+      {session?.state === "closed" && <small>Finished session</small>}</div>
+      <h1>{session?.title ?? "Your conversation"}</h1></div>
+    <ol className="transcript" aria-label="Chat transcript" aria-live="polite" aria-busy={pending !== null}>{detail?.messages.map((m,i) =>
+      <li key={m.id} ref={pending === null && i === detail.messages.length - 1 ? last : null}
+        className={`${m.speaker} ${m.mode === "scorecard" || m.mode === "report" ? "artifact" : ""}`}>
+        {m.speaker === "user" ? <small className="sr-only">You</small> : <div className="speaker"><Compass/>Coach <small>{m.mode}</small></div>}
+        <p>{m.text}</p>{m.nextChatId && <a href={chatUrl(m.nextChatId)}>Open that session</a>}</li>)}
+      {pending !== null && <><li className="user"><small className="sr-only">You</small><p>{pending}</p></li>
+        <li ref={last} className="assistant"><div className="speaker" role="status"><Compass/>Working on your reply…</div></li></>}
+    </ol>
+    {session && <>{session.digestId && <Discovery data={data} act={act} busy={busy} digestId={session.digestId}/>}
+      {session.targetId && <a className="button quiet" href={`#workspace/prep/${session.targetId}`}>View interview packet &amp; schedule</a>}
       {session.state === "closed" && session.kind === "mock" && data.mocks.find(m => m.id === id)?.report &&
         <a className="button quiet" href={`#workspace/debrief/${id}`}>Review scorecard, examples &amp; next drill</a>}
       {session.kind === "import" && (pendingImport ? error ? <button onClick={() => retry(n => n + 1)}>Retry document analysis</button> :
-        <p role="status">Reading the attachment and searching your job history...</p> : <a className="minor-link" href="#workspace/library">Review updated job history</a>)}
-      {session.state !== "closed" && !pendingImport && composer}
+        <p role="status">Reading the attachment and searching your job history...</p> : <a className="button quiet" href="#workspace/library">Review updated job history</a>)}
       <div className="session-tools">{session.state !== "closed" && !pendingImport && <button className="text-button" disabled={busy} onClick={() => send("finish")}>Finish session</button>}
         {lastMsg?.speaker === "assistant" && <details><summary>Rate reply</summary><div className="actions">{["up","down"].map(v =>
           <button key={v} className="quiet" disabled={busy} aria-pressed={lastMsg.vote === v} onClick={() => rating(lastMsg,v)}>{v === "up" ? "Helpful" : "Unhelpful"}</button>)}</div></details>}
-        <details><summary>Session options</summary><Starters small/><button className="text-button" disabled={busy} onClick={() => {
+        <details><summary>Session options</summary><a href="#workspace/new/mock">Start a scored mock interview</a>{" · "}<button className="text-button" disabled={busy} onClick={() => {
           if (confirm(session.kind === "import" ? "Forget this chat and any pending attachment or match questions? Filed document evidence stays in Job experience. Follow-up facts sourced only from this chat are removed." :
-            "Forget this conversation, its private notes, and facts sourced from it? Job and project labels, interview plans and scout reports are managed separately."))
+            "Forget this conversation, its notes, and statements supported only by this conversation? Project labels, plans and saved job searches stay in your workspace."))
             void act(async () => { await api(`chats/${id}`, "DELETE"); location.hash = "workspace/history"; });
-        }}>Delete this conversation</button></details></div>
-    </>}
-    <DocumentImport compact change={act} busy={busy} />
+        }}>Delete this conversation</button></details></div></>}
+    </div></div>
+    <div className="compose-dock"><div className="dock-column">
+      {session?.state === "closed" || pendingImport ? <div className="closed-actions">
+        <a className="button quiet" href="#workspace"><Icon name="newChat"/>Start a new chat</a>{attachment}</div> : composer}
+      <small className="composer-note">{session?.kind === "mock" ? "Only this interview is scored. Work examples also update your history and memory. " : ""}Attachments start a separate document chat.</small>
+    </div></div>
   </div>;
 }
 
 type Hit = { id: string; kind: string; label: string; text: string; sessionId: string | null };
-type Note = { id: string; text: string };
-export function ChatHistory({ data, busy, act }: Props) {
-  const [rows,setRows] = useState<Session[]>([]), [notes,setNotes] = useState<Note[]>([]), [old,setOld] = useState<{id:string;goal:string}[]>([]);
+export function ChatHistory({ data, busy, act, rows, listError }: Props & {rows: ChatSession[] | null; listError: string}) {
+  const [old,setOld] = useState<{id:string;goal:string}[]>([]);
   const [query,setQuery] = useState(""), [hits,setHits] = useState<Hit[] | null>(null), [error,setError] = useState("");
   useEffect(() => { let live = true;
-    Promise.all([api<Session[]>("chats"),api<Note[]>("chats/memory"),api<typeof old>("chats/archive")]).then(([s,n,o]) => {
-      if (live) { setRows(s); setNotes(n); setOld(o); }
-    }).catch(e => { if (live) setError(e.message); }); return () => { live = false; };
+    api<typeof old>("chats/archive").then(o => { if (live) setOld(o); }).catch(e => { if (live) setError(e.message); });
+    return () => { live = false; };
   }, [data]);
-  const earlier = data.mocks.filter(m => !rows.some(s => s.id === m.id));
-  return <><a href="#workspace">Back to Chat</a><p className="eyebrow">Your workspace</p><h1>Chat history</h1>{error && <p role="alert">{error}</p>}
+  const earlier = rows ? data.mocks.filter(m => !rows.some(s => s.id === m.id)) : [];
+  return <><p className="eyebrow">Conversations &amp; memory</p><h1>Chat history</h1>
+    <p className="intro">Pick up a conversation, or search for something in your experience library.</p>
+    {(error || listError) && <p role="alert">{error || listError}</p>}
     <form className="search-field" onSubmit={e => { e.preventDefault(); void act(async () => setHits(await api<Hit[]>("chats/search","POST",{query}))); }}>
       <label className="sr-only" htmlFor="recall">Search conversations and experience</label><input id="recall" type="search" placeholder="Search conversations and experience" maxLength={500} required value={query} onChange={e => {setQuery(e.target.value); setHits(null);}}/>
-      <button disabled={busy}>Search</button></form>
+      <button disabled={busy}><Icon name="search"/>Search</button></form>
     {hits !== null && <section aria-label="Search results"><h2>Search results</h2>{hits.length ? hits.map(h => <article className="item" key={h.kind+h.id}><small>{h.kind}</small>
-      <h3><a href={h.kind === "interview target" ? `#workspace/prep/${h.id}` : !h.sessionId ? "#workspace/library" : h.kind === "earlier builder" ? `#workspace/archive/${h.sessionId}` : h.kind === "earlier mock" ?
+      <h3><a href={h.kind === "agent memory" ? "#workspace/memory" : h.kind === "interview target" ? `#workspace/prep/${h.id}` : !h.sessionId ? "#workspace/library" : h.kind === "earlier builder" ? `#workspace/archive/${h.sessionId}` : h.kind === "earlier mock" ?
         `#workspace/${h.sessionId}` : chatUrl(h.sessionId)}>{h.label}</a></h3><p>{h.text}</p></article>) : <p>No matching evidence or conversation found.</p>}</section>}
-    <section className="recents"><h2>Sessions</h2>{rows.map(s => <a key={s.id} href={chatUrl(s.id)}><span><strong>{s.title}</strong><small>{modeName(s.kind)} · {s.state}</small></span><small>{date(s.updatedAt)}</small></a>)}
+    <section className="recents" aria-label="Sessions"><h2>Sessions</h2>{rows?.map(s => <a key={s.id} href={chatUrl(s.id)}>
+      <span className={`intent-icon ${modeIcon(s.kind)}`}><Icon name={modeIcon(s.kind)}/></span>
+      <span><strong>{s.title}</strong><small>{modeName(s.kind)} · {s.state}</small></span><small>{date(s.updatedAt)}</small></a>)}
       {old.map(b => <a key={b.id} href={`#workspace/archive/${b.id}`}>{b.goal}<small>Earlier builder</small></a>)}
       {earlier.map(m => <a key={m.id} href={`#workspace/${m.id}`}>{m.target}<small>Earlier mock</small></a>)}
-      {!rows.length && !old.length && !earlier.length && <p>No saved sessions yet.</p>}</section>
-    <details><summary>Chat memory</summary><p>Say <strong>Remember: …</strong> in an experience conversation to save a short preference. Notes are for coaching, never resume claims. Deleting a note stops its use as a preference; the conversation itself has a separate delete control.</p>
-      {notes.map(n => <div className="item" key={n.id}><p>{n.text}</p><button disabled={busy} className="quiet" onClick={() => void act(async () => {await api(`chats/memory/${n.id}`,"DELETE");setHits(null);})}>Forget note</button></div>)}
-      {!notes.length && <small>No private notes saved.</small>}</details></>;
+      {!listError && (rows === null ? <p role="status">Loading conversations...</p> : !rows.length && !old.length && !earlier.length && <p>No saved sessions yet. <a href="#workspace">Start a chat</a></p>)}</section>
+    <a href="#workspace/memory">Manage agent memory</a>{" · "}<a href="#workspace/jobs">Saved job searches</a></>;
 }

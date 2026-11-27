@@ -178,7 +178,12 @@ public static class WorkspaceApi
                 return Results.Conflict("The next probe changed. Review the current question and your draft before saving.");
             mock.AnswersJson = JsonSerializer.Serialize(answers.Append(text));
             mock.Revision++;
-            await db.SaveChangesAsync(c.RequestAborted);
+            await using (var tx = await db.Database.BeginTransactionAsync(c.RequestAborted))
+            {
+                if (ExperienceModule.IsWorkAnswer(text))
+                    await ExperienceModule.CaptureAnswer(db, mock.WorkspaceId, text, null, id, $"Mock answer {index + 1}", null, null, c.RequestAborted);
+                await db.SaveChangesAsync(c.RequestAborted); await tx.CommitAsync(c.RequestAborted);
+            }
             if (mock.Adaptive && index + 1 < Practice.Probes.Length)
             {
                 var next = await coach.NextQuestion(mock.Target, qs[index], text, Practice.Probes[index + 1], c.RequestAborted);
@@ -232,13 +237,20 @@ public static class WorkspaceApi
             if (mock.Retry is not null) return Results.Conflict("This drill is already saved.");
             mock.Retry = input.Text.Trim();
             mock.Revision++;
-            await db.SaveChangesAsync();
+            await using var tx = await db.Database.BeginTransactionAsync(c.RequestAborted);
+            if (ExperienceModule.IsWorkAnswer(mock.Retry))
+            {
+                var chat = await db.Set<ChatSession>().SingleOrDefaultAsync(s => s.WorkspaceId == mock.WorkspaceId && s.Id == id, c.RequestAborted);
+                await ExperienceModule.CaptureAnswer(db, mock.WorkspaceId, mock.Retry, chat, id, "Ungraded retry", null, null, c.RequestAborted);
+            }
+            await db.SaveChangesAsync(c.RequestAborted); await tx.CommitAsync(c.RequestAborted);
             return Results.NoContent();
         });
     }
 
     internal static async Task ForgetMock(PracticeDb db, Guid owner, Guid id, CancellationToken ct)
     {
+        await ExperienceModule.ForgetConversationSource(db, owner, id, ct);
         await db.Facts.Where(f => f.WorkspaceId == owner && f.SourceMockId == id).ExecuteDeleteAsync(ct);
         await db.Set<PrepBlock>().Where(b => b.AttemptId == id && db.Set<PrepSchedule>().Any(s => s.Id == b.ScheduleId && s.WorkspaceId == owner))
             .ExecuteUpdateAsync(s => s.SetProperty(b => b.AttemptId, (Guid?)null).SetProperty(b => b.State, "skipped"), ct);

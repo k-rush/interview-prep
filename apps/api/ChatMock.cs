@@ -43,6 +43,8 @@ internal static partial class ChatModule
         }
         if (m is null) throw new DbUpdateConcurrencyException();
         answers = [.. answers, text]; m.AnswersJson = JsonSerializer.Serialize(answers); m.Revision++;
+        if (ExperienceModule.IsWorkAnswer(text))
+            await ExperienceModule.CaptureAnswer(db, s.WorkspaceId, text, s, m.Id, $"Mock answer {answers.Length}", null, null, ct);
         if (answers.Length < 4)
         {
             var i = answers.Length; var qs = m.Questions();

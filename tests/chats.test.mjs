@@ -29,7 +29,7 @@ test('the coach calls owner-scoped recall, keeps notes separate, and never reviv
   t.after(()=>{fixture.closeAllConnections();return new Promise(resolve=>fixture.close(resolve));});
   const app = await localHost(t,fixture.address().port), a = await app.open(), b = await app.open(), c = client(app,a), other = client(app,b);
   await other.json('evidence','POST',{project:'Moonrise',statement:'Secret from the other fixture'});
-  const id = await c.start('builder'), first = {revision:0,requestId:randomUUID(),text:'Project: Moonrise. I built a rollout checklist.'};
+  const id = await c.start(), first = {revision:0,requestId:randomUUID(),text:'Project: Moonrise. I built a rollout checklist.'};
   await c.json(`chats/${id}/turns`,'POST',first); await c.json(`chats/${id}/turns`,'POST',first);
   assert.equal((await app.request(`chats/${id}/turns`,a,'POST',{...first,text:'Changed payload'})).status,409);
   const detail = await c.json(`chats/${id}`); assert.equal(detail.messages.length,3); assert.equal(detail.messages.at(-1).mode,'local model');
@@ -40,19 +40,25 @@ test('the coach calls owner-scoped recall, keeps notes separate, and never reviv
   await c.json(`evidence/${fact.id}/confirm`,'POST',{claim:'I maintained the Moonrise runbook.'});
   await c.send(id,1,'Remember: Keep coaching questions short.');
   assert.equal((await app.state(a)).facts.length,1);
-  const note = (await c.json('chats/memory'))[0];assert.deepEqual(await other.json('chats/memory'),[]);
-  const next = await c.start('builder');await c.send(next,0,'What did I mention earlier about Moonrise?');
+  const memories = await c.json('chats/memory'), note = memories.find(n=>n.factId===null);
+  assert.equal(memories.find(n=>n.factId===fact.id).text,'I maintained the Moonrise runbook.');
+  assert.deepEqual(await other.json('chats/memory'),[]);
+  assert.equal((await app.request(`chats/memory/${note.id}`,b,'PUT',{text:'Different owner'})).status,404);
+  assert.equal((await app.request(`chats/memory/${note.id}`,b,'DELETE')).status,404);
+  await c.json(`chats/memory/${note.id}`,'PUT',{text:'Use bullet points.'});
+  const next = await c.start();await c.send(next,0,'What did I mention earlier about Moonrise?');
   assert.ok(calls.some(p=>p.message?.includes('mention earlier') && !p.search_workspace));
   const recall = calls.at(-1).search_workspace;
   assert.ok(recall.some(h=>h.kind==='confirmed fact' && h.text==='I maintained the Moonrise runbook.'));
   assert.ok(!JSON.stringify(calls).includes('Secret from the other fixture'));assert.ok(!recall.some(h=>h.text===first.text));
+  assert.ok(calls.at(-1).notes.includes('Use bullet points.') && !calls.at(-1).notes.includes('Keep coaching questions short.'));
   const fork = await c.send(next,1,'Start a mock interview');assert.notEqual(fork.id,next);assert.equal((await c.json(`chats/${fork.id}`)).session.kind,'mock');
-  await c.json(`chats/memory/${note.id}`,'DELETE');assert.deepEqual(await c.search('Keep coaching questions short'),[]);
+  await c.json(`chats/memory/${note.id}`,'DELETE');assert.deepEqual(await c.search('bullet points'),[]);
   await app.restart();assert.equal((await c.json(`chats/${id}`)).messages.length,5);
   await c.json(`chats/${id}`,'DELETE'); assert.deepEqual((await app.state(a)).facts,[]);
 });
 
-test('chat mocks close with complete or explicitly incomplete scorecards and never auto-file answers', async t => {
+test('chat mocks file cited answers without changing complete or explicitly incomplete scorecards', async t => {
   const app = await localHost(t), a = await app.open(), c = client(app,a);
   const first = await c.start('mock');await c.send(first,0,'Engineer');await c.send(first,1,'I built a service.');await c.send(first,2,'','finish');
   const partial = await c.json(`chats/${first}`);assert.match(partial.messages.at(-1).text,/1\/4 questions answered.*insufficient evidence/s);
@@ -60,33 +66,64 @@ test('chat mocks close with complete or explicitly incomplete scorecards and nev
   for (const [i,text] of ['Engineer','I owned the rollout.','I chose a pilot instead of a launch because of risk.','The number of tickets fell after the pilot.','I designed the service when customers needed it.'].entries()) await c.send(second,i,text);
   const full = await c.json(`chats/${second}`);assert.equal(full.session.state,'closed');assert.match(full.messages.at(-1).text,/Practice scorecard.*Simulated (no-)?hire/s);
   assert.match(full.messages.at(-1).text,/Offline wording checklist/);
-  const ws = await app.state(a);assert.equal(ws.facts.length,0);assert.equal(ws.mocks.find(m=>m.id===second).report.marks.length,4);
+  const ws = await app.state(a);assert.equal(ws.facts.length,5);assert.equal(ws.mocks.find(m=>m.id===second).report.marks.length,4);
+  assert.ok(ws.facts.every(f=>!f.confirmed && !f.allowDrafts && !f.allowLive));
+  assert.deepEqual((await c.json('chats/memory')).map(m=>m.factId).sort(),ws.facts.map(f=>f.id).sort());
   await c.json(`chats/${second}`,'DELETE');assert.equal((await app.state(a)).mocks.length,1);
+  assert.deepEqual((await c.json('chats/memory')).map(n=>n.text),['I built a service.']);
 });
 
-test('chat scout returns a dated digest, stated compensation and both reviewable drafts without auto applying', async t => {
-  const app = await localHost(t), c = client(app,await app.open());
-  const claim = 'I used SQL to check fictional forecasts.';
-  const {id:fid} = await c.json('evidence','POST',{project:'Forecasts',statement:claim});
-  await c.json(`evidence/${fid}/confirm`,'POST',{claim,allowDrafts:true});
-  await c.json('discovery/listings','POST',{permitPrivateUse:true,title:'Data analyst',employer:'Example',pay:'Posted range: 80–90k',must:'SQL'});
-  const id = await c.start('scout');await c.send(id,0,'Data analyst');
-  const report = await c.json(`chats/${id}`);assert.equal(report.session.state,'closed');assert.match(report.messages.at(-1).text,/1 matching listing/);
-  const {digests:[d]} = await c.json(`discovery?digestId=${report.session.digestId}`);
-  assert.match(d.matches[0].listing.pay,/80–90k/);assert.equal(d.matches[0].fit.earned,d.matches[0].fit.possible);
-  const p = await c.json(`discovery/drafts/${d.matches[0].packets[0].id}`);
-  assert.ok(p.resume.includes(claim) && p.letter.includes(claim));assert.equal(p.approved,false);
-  await c.json(`evidence/${fid}`,'DELETE');assert.ok(!(await c.json(`discovery?digestId=${d.id}`)).digests[0].matches[0].packets[0].current);
-  const daily = await c.start('scout');
-  for (const [i,text] of ['daily','Data analyst','08:30'].entries()) await c.send(daily,i,text);
-  assert.equal((await c.json('discovery')).settings.enabled,false);
-  await c.send(daily,3,'confirm');
-  const s = (await c.json('discovery')).settings;assert.deepEqual([s.enabled,s.localTime,s.zone,s.autoDraft],[true,'08:30','UTC',true]);
-  assert.equal((await c.json(`chats/${daily}`)).session.digestId,d.id);
+test('one ordinary chat builds history, rehearses an interview and can switch to job search without creating a mock', async t => {
+  const app = await localHost(t), a = await app.open(), c = client(app,a), id = await c.start();
+  const thread = () => c.json(`chats/${id}`), memory = () => c.json('chats/memory');
+  await c.send(id,0,'Help me add experience to my job history.');
+  const claim = 'Project: Moonrise. In my previous role I led the migration.';
+  await c.send(id,1,claim);
+  const [first] = (await app.state(a)).facts;
+  await c.json(`evidence/${first.id}/confirm`,'POST',{claim,allowDrafts:true});
+  await c.send(id,2,'Go through an example interview question with me.');
+  assert.match((await thread()).messages.at(-1).text,/without a score/);
+  await c.send(id,3,claim);
+  await c.send(id,4,'Support tickets fell after the pilot.');
+  const state = await app.state(a);
+  assert.equal(state.mocks.length,0);assert.equal((await thread()).session.kind,'chat');
+  assert.deepEqual(state.facts.map(f=>[f.project,f.claim,f.allowDrafts]).sort(),[
+    ['Moonrise',claim,true],['Moonrise','Support tickets fell after the pilot.',false]
+  ].sort());
+  assert.equal((await memory()).length,2);
+  const linked = (await memory()).find(n=>n.factId===first.id);
+  await c.json(`chats/memory/${linked.id}`,'PUT',{text:'Ask about migration decisions.'});
+  await c.json(`chats/memory/${linked.id}`,'DELETE');
+  assert.equal((await app.state(a)).facts.find(f=>f.id===first.id).claim,claim);
+  await c.send(id,5,'Find jobs that are a close match for my experience.');
+  assert.match((await thread()).messages.at(-1).text,/public job title/);
+  await c.send(id,6,'cancel');assert.equal((await thread()).session.state,'active');
+  assert.equal((await c.json('chats')).length,1);
+  const [remaining] = await memory();
+  await c.json(`chats/memory/${remaining.id}`,'PUT',{text:'Ask how I measured the pilot.'});
+  const {id:merged} = await c.json('experience/merge','POST',{left:state.facts[0],right:state.facts[1],claim:'I led the Moonrise migration and tracked tickets.'});
+  assert.deepEqual((await memory()).map(n=>[n.factId,n.text]),[[merged,'Ask how I measured the pilot.']]);
 });
 
-test('an ordinary builder conversation saves an interview target and books mock blocks only after confirmation', async t => {
-  const app = await localHost(t), c = client(app,await app.open()), id = await c.start('builder');
+test('an independently corroborated statement and its edited memory survive deletion of the original chat', async t => {
+  const app = await localHost(t), a = await app.open(), c = client(app,a);
+  const id = await c.start(), mock = await c.start('mock'), claim = 'I built the project dashboard.';
+  await c.send(id,0,claim); const [original] = (await app.state(a)).facts;
+  await c.json(`evidence/${original.id}/confirm`,'POST',{claim,allowDrafts:true});
+  await c.send(mock,0,'Engineer');await c.send(mock,1,claim);
+  const [memory] = await c.json('chats/memory');
+  await c.json(`chats/memory/${memory.id}`,'PUT',{text:'Ask about dashboard design.'});
+  await c.json(`chats/${id}`,'DELETE');
+  const [survivor] = (await app.state(a)).facts;
+  assert.equal(survivor.id,original.id);assert.match(survivor.source,/Mock answer 1/);
+  assert.equal(survivor.allowDrafts,false);assert.equal(survivor.confirmed,false);
+  assert.deepEqual((await c.json('chats/memory')).map(m=>m.text),['Ask about dashboard design.']);
+  await c.json(`mocks/${mock}`,'DELETE');
+  assert.deepEqual((await app.state(a)).facts,[]);assert.deepEqual(await c.json('chats/memory'),[]);
+});
+
+test('an ordinary conversation saves an interview target and books mock blocks only after confirmation', async t => {
+  const app = await localHost(t), c = client(app,await app.open()), id = await c.start();
   const day = new Date(Date.now()+9*86400000).toISOString().slice(0,10);
   for (const [i,text] of ['I have an upcoming interview','Fictional Orchard','Designer','Improve accessibility.',`${day} 14:00`,'no'].entries()) await c.send(id,i,text);
   const {session,messages} = await c.json(`chats/${id}`);assert.match(messages.at(-1).text,/Prep packet/);

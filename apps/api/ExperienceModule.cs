@@ -400,6 +400,13 @@ public static partial class ExperienceModule
             Source = string.Join("\n\n", cites.Select(e => e.AttributedExcerpt)), Confirmed = false, AllowDrafts = false, AllowLive = false };
         db.Add(merged);
         foreach (var cite in cites) cite.FactId = merged.Id;
+        var memories = await db.Set<ChatNote>().Where(n => n.WorkspaceId == owner && n.FactId.HasValue && ids.Contains(n.FactId.Value)).ToListAsync(ct);
+        bool linked = false;
+        foreach (var note in memories)
+        {
+            if (note.Text.Length == 0 && linked) db.Remove(note);
+            else { note.FactId = merged.Id; linked |= note.Text.Length == 0; }
+        }
         await db.SaveChangesAsync(ct);
         await facts.ExecuteDeleteAsync(ct);
         await tx.CommitAsync(ct);

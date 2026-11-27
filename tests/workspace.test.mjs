@@ -33,6 +33,8 @@ test('a confirmed fact and unfinished mock survive restart, stay owner-scoped, a
   assert.deepEqual([theirs.facts, theirs.mocks], [[], []]);
   assert.equal((await app.request(`evidence/${id}`, b, 'DELETE')).status, 404);
   assert.equal((await app.request(`evidence/${id}`, a, 'DELETE')).status, 204);
+  assert.deepEqual((await app.state(a)).facts.map(f=>f.claim),[answer.text]);
+  assert.equal((await app.request(`mocks/${mock}`, a, 'DELETE')).status, 204);
   assert.deepEqual((await app.state(a)).facts, []);
   assert.equal((await app.request('workspace', a, 'DELETE')).status, 204);
   assert.equal((await app.request('workspace', a)).status, 401);

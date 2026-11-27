@@ -58,8 +58,33 @@ if (args.Length == 0)
     await PracticeSchema.Open(db);
     var upgraded = await db.Set<ExperienceSource>().AsNoTracking().SingleAsync(s => s.Id == source.Id);
     if (upgraded.Description is not null || upgraded.Title != source.Title) throw new Exception("Existing source changed during upgrade.");
+    await db.Database.ExecuteSqlRawAsync("""
+        INSERT INTO DiscoveryDigest (Id, WorkspaceId, LocalDate, Zone, TargetRole, CreatedUtc, Trigger, Status, CoverageJson, WebSearchJson, NextStep, DraftNote)
+        VALUES ('00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000001','2025-01-01','UTC','Engineer','2025-01-01','manual','complete','[]','','Saved digest','');
+        ALTER TABLE DiscoveryDigest DROP COLUMN WebSearchJson;
+        PRAGMA user_version=5;
+        """);
+    await PracticeSchema.Open(db);
+    integrity.CommandText = "SELECT count(*) FROM DiscoveryDigest WHERE NextStep='Saved digest' AND WebSearchJson=''";
+    if (Convert.ToInt32(integrity.ExecuteScalar()) != 1) throw new Exception("Scout search upgrade changed a saved digest.");
+    var chat = new ChatSession { WorkspaceId = fact.WorkspaceId, Kind = "builder" };
+    db.Add(chat); await db.SaveChangesAsync();
+    await db.Database.ExecuteSqlRawAsync("""
+        DROP TABLE ChatNote;
+        CREATE TABLE ChatNote (Id TEXT PRIMARY KEY, WorkspaceId TEXT NOT NULL, ChatId TEXT NOT NULL, Text TEXT NOT NULL,
+            FOREIGN KEY (WorkspaceId, ChatId) REFERENCES ChatSession (WorkspaceId, Id) ON DELETE CASCADE);
+        INSERT INTO ChatNote SELECT '00000000-0000-0000-0000-000000000005', WorkspaceId, Id, 'Ask one question at a time.' FROM ChatSession;
+        PRAGMA user_version=6;
+        """);
+    await PracticeSchema.Open(db); await PracticeSchema.Open(db);
+    integrity.CommandText = "SELECT count(*) FROM ChatNote WHERE ChatId IS NOT NULL AND FactId IS NULL AND Text='Ask one question at a time.'";
+    if (Convert.ToInt32(integrity.ExecuteScalar()) != 1) throw new Exception("Agent memory upgrade lost an existing coaching note.");
+    integrity.CommandText = "PRAGMA foreign_key_check";
+    if (integrity.ExecuteScalar() is not null) throw new Exception("Agent memory upgrade broke source ownership.");
     await db.Database.ExecuteSqlRawAsync("PRAGMA user_version=9999");
     try { await PracticeSchema.Open(db); throw new Exception("Newer version not rejected."); }
     catch (InvalidOperationException ex) when (ex.Message.Contains("newer studio")) { }
 }
 Console.WriteLine("Compatible schema; records preserved on the isolated copy.");
+await ScoutWebSearchChecks.Run();
+Console.WriteLine("Scout web search request, citation validation and failure checks passed.");

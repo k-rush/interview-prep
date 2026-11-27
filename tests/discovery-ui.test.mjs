@@ -1,67 +1,54 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { launchBrowser } from '../apps/web/tests/browser.mjs';
 import { localHost } from './local-host.mjs';
 
-test('browser: paste a job offline, inspect gaps, review both grounded documents and explicitly download', async t => {
-  const app = await localHost(t), owner = await app.open();
-  const claim = 'I used SQL to reconcile two fictional reports.';
-  const create = await app.request('evidence', owner, 'POST', { project: 'Review label only', statement: claim });
-  assert.equal(create.status, 200);
-  const { id } = await create.json();
-  assert.equal((await app.request(`evidence/${id}/confirm`, owner, 'POST', { claim, allowDrafts: true })).status, 204);
-  const browser = await launchBrowser(t);
-  const context = await browser.newContext();
-  const [name, value] = owner.split('=');
-  await context.addCookies([{ name, value, domain: new URL(app.url).hostname, path: '/api', httpOnly: true, sameSite: 'Strict' }]);
-  await context.route('**/*', route => new URL(route.request().url()).origin === app.url ? route.continue() : route.abort());
-  const errors = [], page = await context.newPage();
-  page.on('pageerror', e => errors.push(e.message));
-  await page.goto(app.url + '/#workspace/jobs');
-  await page.getByLabel('Target role').fill('Data analyst');
-  await page.getByRole('button', { name: 'Save scout settings' }).click();
-  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(b => b.textContent === 'Run scout now' && !b.disabled));
-  await page.getByText('Add a private listing', { exact: true }).click();
-  const form = page.locator('form').filter({ has: page.getByRole('button', { name: 'Save private listing' }) });
-  await form.getByLabel('Job title').fill('Data analyst');
-  await form.getByLabel('Employer').fill('Fictional Pine');
-  await form.getByLabel('Required skills, comma-separated').fill('SQL, Budgeting');
-  await form.getByLabel('Permitted excerpt (optional)').fill('Support the monthly data review.');
-  await form.getByLabel(/I have permission/).check();
-  await form.getByRole('button', { name: 'Save private listing' }).click();
-  await page.getByText('Data analyst · Fictional Pine', { exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Run scout now' }).click();
-  await page.getByText('Why this job? Evidence and gaps', { exact: true }).click();
-  await page.getByText('Budgeting: not documented', { exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Prepare a resume and letter' }).click();
-  await page.getByRole('button', { name: 'Review resume and letter' }).click();
-  const review = page.getByRole('region', { name: 'Review application pair' });
-  await review.getByRole('heading', { name: 'Claim-by-claim evidence (not exported)' }).waitFor();
-  assert.ok((await review.locator('blockquote').allTextContents()).every(text => text.includes(claim) && !text.includes('Budgeting')));
-  assert.equal(await review.getByRole('button', { name: 'Download text pair' }).count(), 0);
-  await review.getByRole('button', { name: /I reviewed both documents/ }).click();
-  const [download] = await Promise.all([page.waitForEvent('download'), review.getByRole('button', { name: 'Download text pair' }).click()]);
-  assert.equal(download.suggestedFilename(), 'reviewed-application-pair.txt');
-  const text = []; for await (const chunk of await download.createReadStream()) text.push(chunk);
-  const exported = Buffer.concat(text).toString('utf8');
-  assert.ok(exported.includes(claim) && !exported.includes('Review label only'));
-  await review.getByRole('button', { name: 'Download text pair' }).waitFor();
-
-  const library = await context.newPage();
-  await library.goto(app.url + '/#workspace/library');
-  await library.getByText('Edit or forget this fact', { exact: true }).click();
-  await library.getByRole('button', { name: 'Forget fact' }).click();
-  await library.getByRole('button', { name: 'Forget fact' }).waitFor({ state: 'hidden' });
-  await page.bringToFront();
-  await review.getByText(/This pair is no longer current/).waitFor();
-  assert.equal(await review.locator('blockquote').count(), 0);
-  assert.equal(await review.getByRole('button', { name: 'Download text pair' }).count(), 0);
-  await page.getByRole('button', { name: 'Prepare for this job' }).click();
-  await page.waitForURL(/#workspace\/prep\/[0-9a-f-]+$/);
-  const targets = await (await app.request('targets', owner)).json();
-  const target = targets.find(x => page.url().endsWith(x.id));
-  assert.equal(target.role, 'Data analyst'); assert.equal(target.company, 'Fictional Pine');
-  assert.ok(target.description.includes('Support the monthly data review.') && target.description.includes('SQL, Budgeting'));
-  assert.ok(!target.description.includes(claim)); assert.equal(target.jobUrl, null);
-  assert.deepEqual(errors, []);
+test('search in normal chat ranks public links locally, asks once about daily runs and shares the Account setting', async t => {
+  const dir = await mkdtemp(join(tmpdir(),'public-job-search-')), file = join(dir,'response.json');
+  const titles = ['Data analyst - merchandising', 'Data analyst - SQL'];
+  await writeFile(file,JSON.stringify({status:'completed',output:[
+    {type:'web_search_call',status:'completed'},
+    {type:'message',role:'assistant',content:[{type:'output_text',annotations:titles.map((title,i)=>({
+      type:'url_citation',title,url:`https://careers.example.org/postings/${i}`
+    }))}]}
+  ]}));
+  t.after(async()=>{await unlink(file);await rmdir(dir);});
+  const app = await localHost(t,undefined,{INTERVIEW_PREP_SCOUT_SEARCH_REPLAY_FILE:file});
+  const browser = await launchBrowser(t), page = await browser.newPage({timezoneId:'UTC'});
+  const errors = [];
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.route('**/*',r=>new URL(r.request().url()).origin===app.url ? r.continue() : r.abort());
+  await page.goto(app.url);await page.getByRole('button',{name:'Open my local workspace'}).click();
+  const input = page.getByLabel('Message your coach'), transcript = page.getByRole('list',{name:'Chat transcript'});
+  const say = async text => {
+    await input.fill(text);await input.press('Enter');
+    await transcript.locator('li.user').last().getByText(text,{exact:true}).waitFor();
+    await page.locator('ol[aria-label="Chat transcript"][aria-busy="false"]').waitFor();
+  };
+  await say('Remember: I prefer SQL work.');
+  await say('Find jobs that are a close match for my experience.');
+  await transcript.getByText(/What public job title/).waitFor();
+  await say('Data analyst');
+  const report = page.getByRole('link',{name:titles[1],exact:true});
+  await report.waitFor();
+  assert.equal(await page.locator('ol').filter({has:report}).getByRole('link').first().textContent(),titles[1]);
+  await transcript.getByText(/Would you like me to search for Data analyst daily/).waitFor();
+  await say('yes');await transcript.getByText(/Daily search is on/).waitFor();
+  const chat = page.url();
+  await say('Find jobs that are a close match for my experience.');
+  await transcript.getByText(/Search for “Data analyst”/).waitFor();
+  await say('yes');
+  await transcript.locator('li.assistant').last().getByText(/Job search report/).waitFor();
+  assert.equal(page.url(),chat);assert.equal(await transcript.getByText(/Would you like me to search for Data analyst daily/).count(),1);
+  await page.getByRole('link',{name:/^Account Settings/}).click();
+  const setting = page.getByRole('checkbox',{name:'Run my job search daily'});
+  await setting.waitFor();assert.ok(await setting.isChecked());
+  await Promise.all([page.waitForResponse(r=>r.url().endsWith('/account/daily-search') && r.request().method()==='PUT' && r.ok()),setting.uncheck()]);
+  await page.reload();await setting.waitFor();assert.equal(await setting.isChecked(),false);
+  await page.goto(app.url+'/#workspace/jobs');await page.getByRole('heading',{name:'Saved job searches'}).waitFor();await report.waitFor();
+  assert.equal(await page.getByRole('button',{name:/Save scout settings|Follow board|Save private listing/}).count(),0);
+  assert.deepEqual(errors,[]);
 });

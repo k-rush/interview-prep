@@ -35,7 +35,8 @@ public static partial class ExperienceModule
             if (keep is null) continue;
             foreach (var p in group) p.primary.Corroborates = true;
             keep.support.Corroborates = false;
-            keep.fact.Source = keep.support.AttributedExcerpt; keep.fact.Origin = "Document excerpt";
+            keep.fact.Source = keep.support.AttributedExcerpt; keep.fact.Origin = keep.support.AttributedExcerpt.Split(" · ", 2)[0];
+            keep.fact.SourceMockId = null; keep.fact.SourceTurn = null;
             keep.fact.Confirmed = keep.fact.AllowDrafts = keep.fact.AllowLive = false;
             await db.Set<CueCard>().Where(c => c.FactId == keep.fact.Id).ExecuteDeleteAsync(ct);
         }

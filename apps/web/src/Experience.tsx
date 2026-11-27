@@ -24,14 +24,17 @@ export function Experience({ data, act, busy }: Props) {
     return () => { live = false; };
   }, []);
   const change: Act = action => act(async () => {
-    await action(); await load();
+    await action();
     if (typeof BroadcastChannel !== "undefined") { const ch = new BroadcastChannel("practice-library"); ch.postMessage("changed"); ch.close(); }
+    await load();
   });
-  return <><p className="eyebrow">Your library</p><h1>Job experience</h1>
+  return <><p className="eyebrow">Career library</p><h1>Job experience</h1>
     <p className="intro">Keep the stories behind your resume. Bring a document, link a profile, or <a href="#workspace/new/builder">talk it through in Chat</a>.</p>
     {error && <p role="alert">{error}</p>}
+    <DocumentImport change={change} busy={busy} />
+    {data.facts.length > 0 && <section><h2>Review your statements</h2><p className="muted">Check the wording and choose where each fact can be used.</p>
+      {data.facts.map(f => <Evidence key={`${f.id}-${f.confirmed}-${f.claim}`} fact={f} change={change} busy={busy}/>)}</section>}
     {!library ? <p role="status">{error ? "Unable to open the library." : "Opening your library…"}</p> : <>
-      <DocumentImport change={change} busy={busy} />
       <section><h2>Jobs, projects &amp; situations</h2>
         {!library.nodes.length && <p className="muted">Drop a document or describe your work in Chat to start your job history.</p>}
         {library.nodes.map(n => {
@@ -68,6 +71,20 @@ export function Experience({ data, act, busy }: Props) {
       <BaseResume data={data} act={act} busy={busy} />
     </>}
   </>;
+}
+
+function Evidence({ fact, change, busy }: ActionProps & { fact: Fact }) {
+  const editor = <form onSubmit={e => { e.preventDefault(); const v = values(e.currentTarget);
+    void change(() => api(`evidence/${fact.id}/confirm`,"POST",{claim:v.claim,allowDrafts:v.drafts==="on",allowLive:v.live==="on"}));
+  }}><p>Original statement:</p><blockquote>{fact.source}</blockquote>
+    <label>Statement to keep<textarea name="claim" required maxLength={2000} defaultValue={fact.claim}/></label>
+    <label><input type="checkbox" name="drafts" defaultChecked={fact.allowDrafts}/> May use this fact in resumes and cover letters</label>
+    <label><input type="checkbox" name="live" defaultChecked={fact.allowLive}/> May use a separately approved project label in live reminders</label>
+    <div className="actions"><button disabled={busy}>{fact.confirmed ? "Save correction" : "Confirm fact"}</button>
+      <button type="button" className="quiet" disabled={busy} onClick={() => void change(() => api(`evidence/${fact.id}`,"DELETE"))}>
+        {fact.confirmed ? "Forget fact" : "Discard proposal"}</button></div></form>;
+  return <article className="item"><p className="eyebrow">{fact.confirmed ? "Confirmed" : "Needs your review"} / {fact.origin}</p><h3>{fact.project}</h3>
+    {fact.confirmed ? <><p>{fact.claim}</p><details><summary>Edit or forget this fact</summary>{editor}</details></> : editor}</article>;
 }
 
 function CompareFacts({ facts, change, busy }: ActionProps & { facts: Fact[] }) {
@@ -138,7 +155,7 @@ export function ArchivedConversation({ id, act, busy }: {id: string; act: Act; b
 function BaseResume({ data, act, busy }: Props) {
   const supported = data.facts.filter(f => f.confirmed && f.allowDrafts);
   return <section><h2>Base resume</h2><p>Only confirmed statements explicitly allowed in drafts appear here. Sources, unreviewed labels, third-party names in source metadata, and unknown outcomes are not added.</p>
-    {supported.length ? <ul>{supported.map(f => <li key={f.id}>{f.claim}</li>)}</ul> : <p>Nothing approved for export yet. Confirm a statement and enable its draft permission below.</p>}
+    {supported.length ? <ul>{supported.map(f => <li key={f.id}>{f.claim}</li>)}</ul> : <p>Nothing approved for export yet. Confirm a statement and enable its draft permission in the review section.</p>}
     <button disabled={busy || !supported.length} onClick={() => void act(async () => {
       const resume = await api<{ text: string; factCount: number }>("experience/resume");
       if (!resume.factCount) throw new Error("No confirmed statements are currently allowed in drafts.");

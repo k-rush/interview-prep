@@ -75,11 +75,13 @@ test('a scheduled mock resumes, finishes its block, and enters only a comparable
   const proposal={index:2,excerpt:'Failures fell.',project:'Pilot'};
   for(let i=0;i<2;i++) assert.equal((await post(`mocks/${second}/proposals`,proposal)).status,204);
   const final = await app.state(owner);
-  assert.equal(final.facts.length,1);assert.equal(final.facts[0].confirmed,false);assert.equal(final.facts[0].allowDrafts,false);
+  assert.deepEqual(final.facts.map(f=>f.claim).sort(),[...answers,proposal.excerpt].sort());
+  assert.ok(final.facts.every(f=>!f.confirmed && !f.allowDrafts));
   assert.deepEqual(final.mocks.find(m=>m.id===second).report,report);
   assert.equal((await app.request(`mocks/${second}`,other,'DELETE')).status,404);
   assert.equal((await app.request(`mocks/${second}`,owner,'DELETE')).status,204);
-  assert.equal((await app.state(owner)).facts.length,0);assert.equal((await progress()).comparable,1);
+  assert.deepEqual((await app.state(owner)).facts.map(f=>f.claim).sort(),[...answers].sort());
+  assert.equal((await progress()).comparable,1);
   assert.equal((await progress()).plan.blocks.find(b=>b.label==='Follow-up mock').state,'skipped');
 });
 

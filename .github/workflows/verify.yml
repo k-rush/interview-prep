@@ -17,8 +17,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --test scripts/check-release.test.mjs
+          node --test scripts/check-release.test.mjs infra/control/controller.test.mjs
           bash scripts/test-infra-plan.sh
+          for template in infra/bicep/*.bicep; do az bicep build --file "$template" --stdout >/dev/null; done
           file="$RUNNER_TEMP/actionlint.tar.gz"
           curl -fsSL --retry 3 -o "$file" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $file" | sha256sum -c -

@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api } from "./client";
+import { Icon } from "./CareerUI";
 
 type Recognition = {
   processLocally: boolean; lang: string; continuous: boolean; interimResults: boolean;
@@ -29,10 +30,12 @@ function wave(samples: Float32Array[]) {
   return new Blob([raw], { type: "audio/wav" });
 }
 
-export function VoiceInput({ value, onChange, label, maxLength, prompt, name, required, compact }: {
-  value: string; onChange: (text: string) => void; label: string; maxLength: number; prompt?: string; name?: string; required?: boolean; compact?: boolean;
+export function VoiceInput({ value, onChange, label, maxLength, prompt, name, required, composer, placeholder }: {
+  value: string; onChange: (text: string) => void; label: string; maxLength: number; prompt?: string; name?: string; required?: boolean;
+  composer?: { attachment: ReactNode; send: ReactNode }; placeholder?: string;
 }) {
   const inputId = useId();
+  const [expanded, setExpanded] = useState(false);
   const [active, setActive] = useState(false), [note, setNote] = useState("");
   const [fallback, allowFallback] = useState(false), [showFallback, setShowFallback] = useState(false), [transcribing, setTranscribing] = useState(false);
   const stop = useRef<((submit: boolean) => void) | null>(null);
@@ -118,7 +121,17 @@ export function VoiceInput({ value, onChange, label, maxLength, prompt, name, re
         <button type="button" className="quiet" onClick={() => window.speechSynthesis?.cancel()}>Stop reading</button></>}</div>
     <small role="status">{note || "Microphone off. Dictation uses an installed on-device recognizer, never cloud recognition. Review the caption before sending."}</small>
   </>;
-  return <div><label htmlFor={inputId} className={compact ? "sr-only" : undefined}>{label}</label><textarea id={inputId} name={name} rows={compact ? 2 : 4}
-    placeholder={compact ? "Message your coach…" : undefined} required={required} maxLength={maxLength} value={value} onChange={e => onChange(e.target.value)} />
-    {compact ? <details className="voice-tools"><summary>Voice options</summary>{voice}</details> : voice}</div>;
+  return <div><label htmlFor={inputId} className={composer ? "sr-only" : undefined}>{label}</label><textarea id={inputId} name={name} rows={composer ? 2 : 4}
+    placeholder={placeholder} required={required} maxLength={maxLength} value={value} onChange={e => onChange(e.target.value)}
+    aria-describedby={composer ? `${inputId}-keys` : undefined}
+    onKeyDown={e => {
+      if (composer && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
+        e.preventDefault(); if (value.trim() && !e.repeat) e.currentTarget.form?.requestSubmit();
+      }
+    }} />
+    {composer ? <><span className="sr-only" id={`${inputId}-keys`}>Enter sends your message. Shift+Enter adds a new line.</span><div className="composer-toolbar">{composer.attachment}
+      <button type="button" className="composer-tool" aria-expanded={expanded} aria-controls={`${inputId}-voice`}
+        onClick={() => { if (expanded) { cancel(); window.speechSynthesis?.cancel(); setNote(""); } setExpanded(!expanded); }}><Icon name="mic"/>Voice options</button>
+      {composer.send}</div>
+      <div id={`${inputId}-voice`} className="voice-panel" hidden={!expanded}>{voice}</div></> : voice}</div>;
 }

@@ -6,6 +6,9 @@ on:
       apply: {type: boolean, description: 'Request protected approval after preview', default: false}
 permissions:
   contents: read
+env:
+  SHARED_RESOURCE_GROUP: ${{ vars.SHARED_RESOURCE_GROUP }}
+  CONTROLLER_DIGEST: ${{ vars.CONTROLLER_DIGEST }}
 jobs:
   preview:
     if: vars.INFRA_ENABLED == 'true' && github.ref == 'refs/heads/main'

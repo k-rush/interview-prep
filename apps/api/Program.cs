@@ -28,6 +28,30 @@ builder.WebHost.ConfigureKestrel(k =>
     k.Listen(container ? IPAddress.Any : IPAddress.Loopback, port);
     k.Limits.MaxRequestBodySize = 32 * 1024;
 });
+if (Environment.GetEnvironmentVariable("INTERVIEW_PREP_DEMO_ONLY") == "1")
+{
+    if (!container || publicOrigin?.Scheme != "https")
+        throw new InvalidOperationException("The public demo requires container mode and its trusted HTTPS origin.");
+    var demo = builder.Build();
+    var root = demo.Environment.WebRootPath;
+    var demoVersion = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+    demo.Use(async (ctx, next) => {
+        ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; connect-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+        ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+        ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        ctx.Response.Headers.CacheControl = "no-store";
+        await next();
+    });
+    demo.UseWhen(c => c.Request.Path.StartsWithSegments("/assets"), branch => branch.UseStaticFiles());
+    demo.MapGet("/", () => Results.Redirect("/demo"));
+    demo.MapGet("/demo", () => Results.File(Path.Combine(root, "index.html"), "text/html; charset=utf-8"));
+    demo.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = "public-demo", version = demoVersion }));
+    demo.MapGet("/readyz", () => new[] { "index.html", "assets/app.js", "assets/app.css" }.All(p => File.Exists(Path.Combine(root, p)))
+        ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
+    demo.Map("/api/{**path}", () => Results.Unauthorized());
+    demo.Run();
+    return;
+}
 var data = Environment.GetEnvironmentVariable("INTERVIEW_PREP_DATA") ??
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InterviewPrep");
 if (OperatingSystem.IsWindows()) Directory.CreateDirectory(data);

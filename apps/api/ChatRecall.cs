@@ -38,16 +38,17 @@ internal static class ChatRecall
         await Find(db.Set<ExperienceNode>().AsNoTracking().Where(n => n.WorkspaceId == owner)
             .Select(n => new RecallHit { Id = n.Id, Kind = n.Kind, Label = n.Label, Text = n.Employer + " " + n.Dates }));
         if (historyOnly) return Ranked();
-        await Find(db.Set<ChatMessage>().AsNoTracking().Where(m => m.WorkspaceId == owner && m.Recallable)
+        await Find(db.Set<ChatMessage>().AsNoTracking().Where(m => m.WorkspaceId == owner && m.Recallable && m.Speaker == "user")
             .Select(m => new RecallHit { Id = m.Id, SessionId = m.ChatId, Kind = "past conversation", Label = m.Session.Kind + " · " + m.Speaker, Text = m.Text }));
         await Find(db.Set<InterviewTarget>().AsNoTracking().Where(t => t.WorkspaceId == owner)
             .Select(t => new RecallHit { Id = t.Id, Kind = "interview target", Label = t.Role + " · " + t.Company, Text = t.Description }));
-        await Find(db.Set<ChatNote>().AsNoTracking().Where(n => n.WorkspaceId == owner)
-            .Select(n => new RecallHit { Id = n.Id, SessionId = n.ChatId, Kind = "private chat note", Label = "Conversation preference", Text = n.Text }));
+        await Find(AgentMemory.Entries(db, owner)
+            .Select(n => new RecallHit { Id = n.Id, SessionId = n.ChatId, Kind = "agent memory", Label = n.FactId == null ? "Coaching note" : "Experience memory", Text = n.Text }));
         await Find(db.Set<ExperienceTurn>().AsNoTracking().Where(t => t.WorkspaceId == owner && t.Speaker == "candidate" && t.Mode == "answer")
             .Select(t => new RecallHit { Id = t.Id, SessionId = t.BuilderId, Kind = "earlier builder", Label = t.Stage, Text = t.Text }));
         var legacy = db.Mocks.AsNoTracking().Where(m => m.WorkspaceId == owner && m.AnswersJson != "[]" &&
-            !db.Set<ChatSession>().Any(s => s.WorkspaceId == owner && s.Id == m.Id));
+            !db.Set<ChatSession>().Any(s => s.WorkspaceId == owner && s.Id == m.Id) &&
+            !db.Set<ExperienceSource>().Any(s => s.WorkspaceId == owner && s.Id == m.Id));
         await Find(legacy.Select(m => new RecallHit { Id = m.Id, SessionId = m.Id, Kind = "earlier mock", Label = m.Target, Text = m.AnswersJson }));
         return Ranked();
         RecallHit[] Ranked()
