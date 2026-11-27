@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type Act, type Workspace } from "./client";
 
-type Configuration = { enabled: boolean; webApiKey: string | null; localWorkspace: boolean };
+type Configuration = { enabled: boolean; webApiKey: string | null; localWorkspace: boolean; customer?: boolean; migration?: boolean };
 type Account = { signedIn: boolean; tier: string; email?: string; billingStatus?: string; paused?: boolean;
   periodStart?: number; periodEnd?: number; checkoutEnabled: boolean; portalEnabled: boolean;
+  methods?: { id: string; label: string; current: boolean }[] | null;
   usage: { meter: string; used: number; limit: number }[] };
 
 function signInCode() {
@@ -32,12 +33,24 @@ export function LandingAccount({ onSignedIn = () => { location.hash = "workspace
   useEffect(() => {
     if (code) history.replaceState(history.state, "", location.pathname + location.hash);
   }, [code]);
-  return <section><h2>Private account</h2>
+  const migration = !!config?.customer && !!config.migration;
+  const notice: Record<string, string> = { failed: "Sign-in was canceled or could not be completed. Try again.",
+    "verification-failed": "A fresh sign-in could not be verified. No changes were made.",
+    "migration-failed": "These sign-ins could not be linked. Your existing workspace has not been moved." };
+  return <section><h2>{config?.customer ? "Welcome to Interview Prep" : "Private account"}</h2>
+    {config?.customer && notice[location.hash.split("/")[1]] && <p role="alert">{notice[location.hash.split("/")[1]]}</p>}
     {error && <p role="alert">{error}</p>}
     {!config ? <p>Checking sign-in availability…</p> : !config.enabled ?
       <p>Managed sign-in is not configured on this installation. The fictional sample needs no account or payment.</p> :
-      <><p>Use a verified email link for a Free account. No password, card or automatic upgrade.
-        Your account is separate from any local workspace; signing in does not copy its records.</p>
+      <>{config.customer && <><p>Choose how to sign in or create your private workspace. You don't need an Azure account.</p>
+        <div className="actions" aria-label="Sign-in options">
+          <a className="button quiet" href="/auth/sign-in/apple">Continue with Apple</a>
+          <a className="button quiet" href="/auth/sign-in/google">Continue with Google</a>
+          <a className="button quiet" href="/auth/sign-in/microsoft">Continue with Microsoft</a>
+          <a className="button" href="/auth/sign-in/local">Use a username and password</a>
+        </div><p>For a new Interview Prep account, choose the username option, then sign up on the secure sign-in page. Your email is used for verification and password recovery.</p></>}
+        {(!config.customer || migration) && <><p>{migration ? "Already have an email-link workspace? Verify your old email link here before your first new sign-in, then choose a new sign-in method to keep your workspace." :
+          "Use a verified email link for a Free account. No password, card or automatic upgrade. Your account is separate from any local workspace; signing in does not copy its records."}</p>
         <form onSubmit={async e => {
           e.preventDefault(); if (working || !config.webApiKey) return;
           setWorking(true); setMessage(""); setError("");
@@ -54,8 +67,8 @@ export function LandingAccount({ onSignedIn = () => { location.hash = "workspace
             if (code) {
               const result: { idToken?: string } = await response.json();
               if (!result.idToken) throw new Error("The provider did not return a verified sign-in.");
-              await api("account/login", "POST", { idToken: result.idToken });
-              setCode(null); setEmail(""); onSignedIn();
+              await api(migration ? "account/migration" : "account/login", "POST", { idToken: result.idToken });
+              setCode(null); setEmail(""); if (migration) location.assign("/auth/migrate"); else onSignedIn();
             } else setMessage("Check your inbox and open the link. Enter the same email address to finish signing in.");
           } catch (err) { setError(err instanceof Error ? err.message : "Sign-in failed."); }
           finally { setWorking(false); }
@@ -65,7 +78,7 @@ export function LandingAccount({ onSignedIn = () => { location.hash = "workspace
           <div className="actions"><button disabled={working}>{working ? "Please wait…" : code ? "Finish verified sign-in" : "Email me a sign-in link"}</button>
             {code && <button className="quiet" type="button" disabled={working} onClick={() => { setCode(null); setError(""); }}>Use a new link</button>}</div>
         </form>
-        {message && <p role="status">{message}</p>}
+        {message && <p role="status">{message}</p>}</>}
       </>}
   </section>;
 }
@@ -95,7 +108,7 @@ export function Accounts({ data, act, busy }: { data: Workspace; act: Act; busy:
       <h3>{account.tier}</h3>
       {data.privateTest ? <p>Access is limited to the designated Microsoft Entra tester. This synthetic workspace expires with the test. Billing and subscriptions are disabled.</p> : !account.signedIn ? <p>This is a local development workspace, not a verified Free or paid account.
         There is no billing or subscription, and local practice is not metered. <a href="#">Return home for sign-in options.</a></p> :
-        <><p>Signed in as {account.email}. {account.periodStart && account.periodEnd ?
+        <><p>{account.email ? `Signed in as ${account.email}.` : "Signed in to your private account."} {account.periodStart && account.periodEnd ?
           `Test billing period: ${day(account.periodStart)} to ${day(account.periodEnd)}. No rollover.` :
           "Free starter allowances are granted once per account, not every month."}</p>
           <ul>{account.usage.map(m => <li key={m.meter}><strong>{quantity(m.meter, Math.max(0, m.limit - m.used))} of {quantity(m.meter, m.limit)}</strong> {labels[m.meter]} remaining</li>)}</ul>
@@ -104,12 +117,23 @@ export function Accounts({ data, act, busy }: { data: Workspace; act: Act; busy:
           {account.tier === "Free" && <p>The Prep test plan adds daily job searches and period allowances: 8 mock starts,
             40 evidence imports, 100 coach conversations, 31 tailored pairs and 120 active minutes with a configured speech service.</p>}
           <p>The live Prep price has not been set. Live checkout is closed. No auto-conversion or overage charges.</p>
+          {account.methods && <><h3>Sign-in methods</h3>
+            <p>Verify your current sign-in before making sensitive changes. To add another method, sign in with that method too. Accounts are never joined by email.</p>
+            {location.hash.endsWith("/conflict") && <p role="alert">That sign-in already belongs to another workspace. Nothing was linked.</p>}
+            {location.hash.endsWith("/wrong-method") && <p role="alert">Use the same method you signed in with to verify this session.</p>}
+            {location.hash.endsWith("/verify-first") && <p role="alert">Verify your current sign-in first, then add a method.</p>}
+            <ul>{account.methods.map(m => <li key={m.id}>{m.label} {m.current ? "(current)" :
+              <button className="text-button" disabled={busy} onClick={() => {
+                if (confirm("Remove this sign-in method and sign out sessions using it?")) void act(async () => { await api(`account/methods/${m.id}`, "DELETE"); });
+              }}>Remove</button>}</li>)}</ul>
+            <div className="actions"><form method="post" action="/auth/verify"><button className="quiet">Verify current sign-in</button></form>
+              <form method="post" action="/auth/link"><button className="quiet">Add a sign-in method</button></form></div></>}
           <div className="actions">
             {account.checkoutEnabled && <button disabled={busy} onClick={() => redirect("checkout")}>Try Stripe test checkout (no real payment)</button>}
             {account.portalEnabled && <button className="quiet" disabled={busy} onClick={() => redirect("portal")}>Manage test billing in Stripe</button>}
             <button className="quiet" disabled={busy} onClick={() => void act(async () => { await api("account/logout", "POST"); location.hash = ""; })}>Sign out</button>
           </div>
-          <p>For billing or deletion, use a fresh sign-in link. Deleting your workspace removes this app’s account data and cancels its test renewals; the managed sign-in identity is separate.</p>
+          <p>{account.methods ? "For billing or deletion, verify your current sign-in." : "For billing or deletion, use a fresh sign-in link."} Deleting your workspace removes this app’s account data and cancels its test renewals; the managed sign-in identity is separate.</p>
         </>}
     </>}
   </section>;

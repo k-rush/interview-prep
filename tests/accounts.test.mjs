@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { createHmac, generateKeyPairSync, randomBytes, randomInt, sign } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, generateKeyPairSync, randomBytes, randomInt, sign } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,8 @@ const priceId = 'price_FixtureOnly';
 const publicPrice = { id: priceId, object: 'price', active: true, livemode: false, billing_scheme: 'per_unit',
   type: 'recurring', unit_amount: randomInt(1, 10000), recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' } };
 const email = 'candidate@example.invalid';
+const tenant = '00000000-0000-4000-8000-000000000001', client = '00000000-0000-4000-8000-000000000002';
+const issuer = `https://${tenant}.ciamlogin.com/${tenant}/v2.0`, origin = 'https://practice.example.invalid';
 
 // Inject transport only into this test executable. The production host keeps its real fixed HTTPS trust endpoints.
 const program = `
@@ -38,8 +40,11 @@ public static class Fixture {
     }
 }
 public sealed class TransportStartup : IHostingStartup {
-    public void Configure(IWebHostBuilder builder) => builder.ConfigureServices(services =>
-        services.AddSingleton<IHttpMessageHandlerBuilderFilter, TransportFilter>());
+    public void Configure(IWebHostBuilder builder) => builder.ConfigureServices(services => {
+        services.AddSingleton<IHttpMessageHandlerBuilderFilter, TransportFilter>();
+        services.Configure<Microsoft.AspNetCore.Authentication.OpenIdConnect.OpenIdConnectOptions>("customer-oidc",
+            o => o.BackchannelHttpHandler = new FixtureTransport());
+    });
 }
 public sealed class TransportFilter : IHttpMessageHandlerBuilderFilter {
     public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next) => b => {
@@ -60,7 +65,7 @@ public sealed class FixtureTransport : DelegatingHandler {
         if (uri.AbsoluteUri == "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com")
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {
                 Content = JsonContent.Create(new Dictionary<string,string> { ["fixture"] = Certificate }) });
-        if (uri.Scheme != "https" || uri.Host is not ("identitytoolkit.googleapis.com" or "api.stripe.com"))
+        if (uri.Scheme != "https" || uri.Host is not ("identitytoolkit.googleapis.com" or "api.stripe.com" or "${tenant}.ciamlogin.com"))
             throw new InvalidOperationException("Unexpected outbound request in offline fixture.");
         req.RequestUri = new Uri("http://127.0.0.1:" + Environment.GetEnvironmentVariable("FIXTURE_PORT") + "/" + uri.Host + uri.PathAndQuery);
         return base.SendAsync(req, ct);
@@ -75,11 +80,26 @@ async function fixture(t) {
   const pair = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     publicKeyEncoding: { type: 'spki', format: 'pem' } });
   const states = new Map(), customers = new Map(), attempts = new Map(), deleted = [], unexpected = [];
+  const codes = new Map(), jwk = { ...createPublicKey(pair.publicKey).export({ format: 'jwk' }), kid: 'fixture', use: 'sig', alg: 'RS256' };
   let lastCustomer, failDelete = false, failSync = false, child, base;
   const remote = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     const url = new URL(req.url, 'http://127.0.0.1'), form = new URLSearchParams(body), key = req.headers['idempotency-key'];
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
+    if (url.pathname.startsWith(`/${tenant}.ciamlogin.com/`)) {
+      if (url.pathname.endsWith('/.well-known/openid-configuration')) return send(200, {
+        issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/keys`,
+        response_types_supported: ['code'], subject_types_supported: ['pairwise'], id_token_signing_alg_values_supported: ['RS256']
+      });
+      if (url.pathname.endsWith('/keys')) return send(200, { keys: [jwk] });
+      if (url.pathname.endsWith('/token')) {
+        const code = form.get('code'), grant = codes.get(code); codes.delete(code);
+        if (!grant || form.get('client_id') !== client || form.get('redirect_uri') !== `${origin}/auth/callback` ||
+            createHash('sha256').update(form.get('code_verifier') || '').digest('base64url') !== grant.challenge) return send(400, { error: 'invalid_grant' });
+        return send(200, { token_type: 'Bearer', expires_in: 3600, access_token: 'fixture-token', id_token: signed(grant.claims) });
+      }
+      unexpected.push(url.pathname); return send(404, {});
+    }
     if (url.pathname === '/identitytoolkit.googleapis.com/v1/accounts:lookup') {
       const claims = JSON.parse(Buffer.from(JSON.parse(body).idToken.split('.')[1], 'base64url'));
       return send(200, { users: [{ localId: claims.sub, emailVerified: true, email: claims.email,
@@ -152,16 +172,60 @@ async function fixture(t) {
         if (logs.length > 8192) logs = logs.slice(-4096);
       });
     });
-    assert.equal((await fetch(base + '/healthz')).status, 200);
+    assert.equal((await site('/healthz')).status, 200);
   }
   const request = (path, cookie, method = 'GET', json, headers = {}) => fetch(`${base}/api/${path}`, { method,
     headers: { 'X-Practice-Request': '1', ...(cookie ? { cookie } : {}), ...(json === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     body: json === undefined ? undefined : JSON.stringify(json) });
-  function token(sub, override = {}) {
-    const now = time(), b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
-    const input = `${b64({ alg: 'RS256', kid: 'fixture' })}.${b64({ iss: `https://securetoken.google.com/${projectId}`, aud: projectId,
-      email, email_verified: true, firebase: { sign_in_provider: 'password' }, exp: now + 3600, iat: now, auth_time: now, sub, ...override })}`;
+  function signed(claims) {
+    const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const input = `${b64({ alg: 'RS256', kid: 'fixture' })}.${b64(claims)}`;
     return `${input}.${sign('RSA-SHA256', Buffer.from(input), pair.privateKey).toString('base64url')}`;
+  }
+  function token(sub, override = {}) {
+    const now = time();
+    return signed({ iss: `https://securetoken.google.com/${projectId}`, aud: projectId, email, email_verified: true,
+      firebase: { sign_in_provider: 'password' }, exp: now + 3600, iat: now, auth_time: now, sub, ...override });
+  }
+  function site(path, cookie = '', method = 'GET', json, headers = {}) {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(`${base}${path}`, { method, headers: { host: new URL(origin).host, cookie, origin,
+        'X-Practice-Request': '1', ...(json === undefined ? {} : { 'content-type': 'application/json' }), ...headers } }, res => {
+        const chunks = []; res.on('data', x => chunks.push(x)); res.on('end', () => {
+          const text = Buffer.concat(chunks).toString();
+          resolve({ status: res.statusCode, location: res.headers.location, cookies: res.headers['set-cookie'] || [], text, json: () => JSON.parse(text) });
+        });
+      });
+      req.on('error', reject); req.end(json === undefined ? undefined : JSON.stringify(json));
+    });
+  }
+  async function oidc(path, sub, cookie = '', overrides = {}, callbackCookie = cookie) {
+    const start = await site(path, cookie, ['/auth/link', '/auth/verify'].includes(path) ? 'POST' : 'GET');
+    assert.equal(start.status, 302, start.text);
+    const auth = new URL(start.location), params = auth.searchParams;
+    assert.equal(auth.origin, new URL(issuer).origin); assert.equal(params.get('response_type'), 'code');
+    assert.equal(params.get('redirect_uri'), `${origin}/auth/callback`); assert.equal(params.get('code_challenge_method'), 'S256');
+    assert.ok(params.get('state') && params.get('nonce'));
+    if (['apple','google','microsoft'].includes(path.split('/').pop()))
+      assert.equal(params.get('domain_hint'), { apple:'apple', google:'google', microsoft:'login.live.com' }[path.split('/').pop()]);
+    if (!path.startsWith('/auth/sign-in/')) assert.equal(params.get('prompt'), 'login');
+    const code = randomBytes(24).toString('hex'), now = time();
+    codes.set(code, { challenge: params.get('code_challenge'), claims: { iss: issuer, aud: client, tid: tenant, sub, iat: now,
+      exp: now + 3600, auth_time: now, nonce: params.get('nonce'), email, ...overrides } });
+    const callback = await site(`/auth/callback?${new URLSearchParams({ state:params.get('state'), code })}`,
+      [callbackCookie, ...start.cookies.map(x => x.split(';')[0])].filter(Boolean).join('; '));
+    assert.equal(callback.status, 302, callback.text);
+    return { ...callback, session: callback.cookies.find(x => x.startsWith('__Host-interview-account='))?.split(';')[0] };
+  }
+  async function customer() {
+    await stop();
+    for (const suffix of ['', '-wal']) {
+      try { await copyFile(join(data, `practice.sqlite${suffix}`), join(data, `customers.sqlite${suffix}`)); }
+      catch (err) { if (suffix === '' || err.code !== 'ENOENT') throw err; }
+    }
+    await start({ INTERVIEW_PREP_PLANE:'customer', INTERVIEW_PREP_CUSTOMER_TENANT_ID:tenant, INTERVIEW_PREP_CUSTOMER_CLIENT_ID:client,
+      INTERVIEW_PREP_CUSTOMER_CLIENT_SECRET:'fixture-only', INTERVIEW_PREP_CUSTOMER_MIGRATE_FIREBASE:'1', INTERVIEW_PREP_STRIPE_MODE:'',
+      INTERVIEW_PREP_WEBROOT:join(root,'apps','api','wwwroot') });
   }
   async function login(sub, cookie) {
     const res = await request('account/login', cookie, 'POST', { idToken: token(sub) });
@@ -187,7 +251,7 @@ async function fixture(t) {
       'stripe-signature': `t=${stamp},v1=${mac}` }, body: opts.tampered ? body + ' ' : body });
   }
   await start();
-  return { request, login, token, start, webhook, state, states, attempts, deleted, get customer() { return lastCustomer; },
+  return { request, login, token, start, site, oidc, startCustomer:customer, webhook, state, states, attempts, deleted, get customer() { return lastCustomer; },
     get url() { return base; }, failDelete: b => { failDelete = b; }, failSync: b => { failSync = b; },
     account: async cookie => (await request('account', cookie)).json() };
 }
@@ -222,6 +286,48 @@ test('verified account and signed Stripe lifecycle on an isolated loopback host'
     assert.deepEqual((await Promise.all([importSource(), importSource(), importSource()])).map(r => r.status).sort(), [200, 200, 429]);
     assert.equal((await app.account(a)).usage.find(x => x.meter === 'imports').used, 2);
   });
+
+  await t.test('customer hosted OIDC, workspace ownership and explicit linking', async () => {
+    const legacy = await app.login('existing-legacy');
+    await app.request('evidence', legacy, 'POST', { project:'Before migration', statement:'A synthetic migration fixture.' });
+    await app.startCustomer();
+    assert.match((await app.site('/')).text, /customer-sign-in/);
+    assert.equal((await app.site('/api/workspace', legacy)).status, 401);
+    assert.equal((await app.site('/api/workspace', '', 'POST')).status, 401);
+    assert.notEqual((await app.site('/api/account/login', '', 'POST', { idToken:app.token('existing-legacy') })).status, 204);
+    const bad = await app.oidc('/auth/sign-in/local','bad', '', { aud:'different-app' });
+    assert.equal(bad.session, undefined);
+    const a = await app.oidc('/auth/sign-in/apple','apple-a', '', { email:'relay@privaterelay.appleid.com', idp:'apple.com' });
+    assert.equal(a.location, '/#workspace'); assert.ok(a.session);
+    assert.match(a.cookies.find(x => x.startsWith(a.session)), /httponly/i);
+    await app.site('/api/evidence', a.session, 'POST', { project:'Only A', statement:'A private synthetic statement.' });
+    const b = await app.oidc('/auth/sign-in/microsoft','microsoft-b', '', { email:'relay@privaterelay.appleid.com' });
+    assert.deepEqual((await app.site('/api/workspace', b.session)).json().facts, []);
+    assert.equal((await app.site('/auth/link', a.session, 'POST', undefined, {origin:'https://elsewhere.invalid'})).status, 403);
+    assert.equal((await app.oidc('/auth/link','microsoft-b',a.session)).location, '/#workspace/account/conflict');
+    assert.equal((await app.oidc('/auth/link','new-google',a.session,{},b.session)).location, '/#signin/failed');
+    assert.equal((await app.oidc('/auth/link','new-google',a.session,{ auth_time: time()-2000 })).location, '/#signin/verification-failed');
+    assert.equal((await app.oidc('/auth/verify','microsoft-b',a.session)).location, '/#workspace/account/wrong-method');
+    assert.equal((await app.oidc('/auth/link','new-google',a.session,{ idp:'google.com' })).location, '/#workspace/account');
+    const google = await app.oidc('/auth/sign-in/google','new-google');
+    assert.equal((await app.site('/api/workspace', google.session)).json().facts[0].project, 'Only A');
+    const methods = (await app.site('/api/account', a.session)).json().methods;
+    assert.equal(methods.length, 2);
+    assert.equal((await app.site(`/api/account/methods/${methods.find(m => m.current).id}`, a.session, 'DELETE')).status, 409);
+    assert.equal((await app.site(`/api/account/methods/${methods.find(m => !m.current).id}`, a.session, 'DELETE')).status, 204);
+    assert.equal((await app.site('/api/workspace', google.session)).status, 401);
+    assert.equal((await app.site('/api/workspace', a.session)).status, 200);
+    const session = (await app.oidc('/auth/verify','apple-a',a.session)).session;
+    assert.ok(session); assert.equal((await app.site('/api/workspace', a.session)).status, 401);
+    await app.site('/api/account/logout', session, 'POST');
+    assert.equal((await app.site('/api/workspace', session)).status, 401);
+    const old = await app.site('/api/account/migration', '', 'POST', { idToken:app.token('existing-legacy') });
+    assert.equal(old.status, 204);
+    const moved = await app.oidc('/auth/migrate','local-migrated',old.cookies[0].split(';')[0]);
+    assert.equal((await app.site('/api/workspace', moved.session)).json().facts[0].project, 'Before migration');
+    assert.equal((await app.site('/api/account/migration', '', 'POST', { idToken:app.token('existing-legacy') })).status, 401);
+  });
+  await app.start();
   await t.test('starter mock quota is atomic and survives a restart; checkout alone cannot grant Prep', async () => {
     const make = () => app.request('mocks', a, 'POST', { target: 'Fixture role' });
     const concurrent = await Promise.all([make(), make(), make()]);

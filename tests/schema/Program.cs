@@ -81,6 +81,20 @@ if (args.Length == 0)
     if (Convert.ToInt32(integrity.ExecuteScalar()) != 1) throw new Exception("Agent memory upgrade lost an existing coaching note.");
     integrity.CommandText = "PRAGMA foreign_key_check";
     if (integrity.ExecuteScalar() is not null) throw new Exception("Agent memory upgrade broke source ownership.");
+    db.Add(new AccountProfile { WorkspaceId = fact.WorkspaceId, Issuer = "legacy-fixture", Subject = "existing-user", Email = "test@example.invalid" });
+    await db.SaveChangesAsync();
+    await db.Database.ExecuteSqlRawAsync("""
+        DROP TABLE AccountSessions;
+        DROP TABLE CustomerLogins;
+        CREATE TABLE AccountSessions (Digest TEXT NOT NULL PRIMARY KEY, WorkspaceId TEXT NOT NULL REFERENCES AccountProfiles(WorkspaceId) ON DELETE CASCADE,
+            AuthTime INTEGER NOT NULL, Expires INTEGER NOT NULL);
+        INSERT INTO AccountSessions SELECT 'saved-session', WorkspaceId, 10, 20 FROM AccountProfiles;
+        PRAGMA user_version=7;
+        """);
+    await PracticeSchema.Open(db); await PracticeSchema.Open(db);
+    var session = await db.Set<AccountSession>().AsNoTracking().SingleAsync(s => s.Digest == "saved-session");
+    if (session.WorkspaceId != fact.WorkspaceId || session.LoginId != null || await db.Set<CustomerLogin>().AnyAsync())
+        throw new Exception("Customer sign-in upgrade changed legacy ownership or silently linked an identity.");
     await db.Database.ExecuteSqlRawAsync("PRAGMA user_version=9999");
     try { await PracticeSchema.Open(db); throw new Exception("Newer version not rejected."); }
     catch (InvalidOperationException ex) when (ex.Message.Contains("newer studio")) { }
