@@ -93,7 +93,7 @@ export function Accounts({ data, act, busy }: { data: Workspace; act: Act; busy:
     {error && <p role="alert">{error}</p>}
     {!account ? <p>Loading account…</p> : <>
       <h3>{account.tier}</h3>
-      {!account.signedIn ? <p>This is a local development workspace, not a verified Free or paid account.
+      {data.privateTest ? <p>Access is limited to the designated Microsoft Entra tester. This synthetic workspace expires with the test. Billing and subscriptions are disabled.</p> : !account.signedIn ? <p>This is a local development workspace, not a verified Free or paid account.
         There is no billing or subscription, and local practice is not metered. <a href="#">Return home for sign-in options.</a></p> :
         <><p>Signed in as {account.email}. {account.periodStart && account.periodEnd ?
           `Test billing period: ${day(account.periodStart)} to ${day(account.periodEnd)}. No rollover.` :

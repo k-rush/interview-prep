@@ -2,8 +2,11 @@ using System.Text.Json;
 
 namespace InterviewPrep;
 
-public sealed class LocalCoach(HttpClient http)
+public sealed class LocalCoach(HttpClient http, StagingModel? staging = null)
 {
+    internal static bool Enabled => PrivateStaging.Enabled || Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is not null;
+    internal static string Label => PrivateStaging.Enabled ? "Azure OpenAI" : "local model";
+    internal static string Assessor => PrivateStaging.Enabled ? "azure" : "local";
     private sealed record Evaluation(string? Competency, int? Points, string? Quote, string? Feedback);
     private sealed record Question(string? Competency, string? Text);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -78,16 +81,21 @@ public sealed class LocalCoach(HttpClient http)
         };
         try
         {
-            using var response = await http.PostAsJsonAsync("v1/chat/completions", request, ct);
-            if (!response.IsSuccessStatusCode) return null;
-            using var envelope = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct));
-            var content = envelope.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            string? content;
+            if (staging != null) content = await staging.Complete(http, instruction, packet, maxTokens, ct);
+            else
+            {
+                using var response = await http.PostAsJsonAsync("v1/chat/completions", request, ct);
+                if (!response.IsSuccessStatusCode) return null;
+                using var envelope = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct));
+                content = envelope.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+            }
             if (content is null) return null;
             using var body = JsonDocument.Parse(content);
             return (property is null ? body.RootElement : body.RootElement.GetProperty(property)).Deserialize<T>(Json);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException
-            or IndexOutOfRangeException || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+            or IndexOutOfRangeException or Azure.Identity.AuthenticationFailedException or IOException || (ex is OperationCanceledException && !ct.IsCancellationRequested))
         {
             return null;
         }

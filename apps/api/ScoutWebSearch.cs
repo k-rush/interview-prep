@@ -8,13 +8,13 @@ namespace InterviewPrep;
 public sealed record ScoutWebLink(string Title, string Url);
 public sealed record ScoutWebResult(ScoutWebLink[] Links, string Status, bool Incomplete = false);
 
-public sealed class ScoutWebSearch(HttpClient http, IConfiguration config)
+public sealed class ScoutWebSearch(HttpClient http, IConfiguration config, StagingModel? staging = null)
 {
     private const int MaxBytes = 1024 * 1024;
     private string? Key => config["INTERVIEW_PREP_OPENAI_SEARCH_KEY"];
     private string? ReplayFile => config["INTERVIEW_PREP_SCOUT_SEARCH_REPLAY_FILE"];
-    private bool PublicIndex => config["INTERVIEW_PREP_HN_JOB_SEARCH"] == "1" && string.IsNullOrWhiteSpace(Key) && string.IsNullOrWhiteSpace(ReplayFile);
-    public bool Configured => PublicIndex || !string.IsNullOrWhiteSpace(Key) || !string.IsNullOrWhiteSpace(ReplayFile);
+    private bool PublicIndex => staging is null && config["INTERVIEW_PREP_HN_JOB_SEARCH"] == "1" && string.IsNullOrWhiteSpace(Key) && string.IsNullOrWhiteSpace(ReplayFile);
+    public bool Configured => staging != null || PublicIndex || !string.IsNullOrWhiteSpace(Key) || !string.IsNullOrWhiteSpace(ReplayFile);
     internal string Disclosure => !string.IsNullOrWhiteSpace(ReplayFile) ? "This installation uses recorded search results; it makes no live lookup." :
         PublicIndex ? "This installation sends only that title to the Hacker News jobs index (Algolia), which mostly covers startup and technology roles." :
         Configured ? "This installation sends only that title to OpenAI public web search." : NotConsulted.Status;
@@ -48,8 +48,8 @@ public sealed class ScoutWebSearch(HttpClient http, IConfiguration config)
             if (PublicIndex) return await FindPublicJobs(role, deadline.Token);
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/responses");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Key);
-            request.Content = JsonContent.Create(new {
-                model = config["INTERVIEW_PREP_OPENAI_SEARCH_MODEL"] ?? "gpt-6.2-astra",
+            var payload = new {
+                model = staging?.Deployment ?? config["INTERVIEW_PREP_OPENAI_SEARCH_MODEL"] ?? "gpt-6.2-astra",
                 store = false,
                 instructions = """
                     Search the public web for job postings matching the supplied target role.
@@ -61,11 +61,13 @@ public sealed class ScoutWebSearch(HttpClient http, IConfiguration config)
                 input = JsonSerializer.Serialize(new { targetRole = role }),
                 tools = new[] { new { type = "web_search", search_context_size = "low" } },
                 tool_choice = new { type = "web_search" },
-                max_tool_calls = 2,
+                max_tool_calls = staging is null ? 2 : 1,
                 max_output_tokens = 1800,
                 reasoning = new { effort = "low" }
-            });
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            };
+            request.Content = JsonContent.Create(payload);
+            using var response = staging != null ? await staging.Send(http, payload, true, deadline.Token) :
+                await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MaxBytes ||
                 response.Content.Headers.ContentType?.MediaType != "application/json") return Unavailable;
             await response.Content.LoadIntoBufferAsync(MaxBytes, deadline.Token);
@@ -73,7 +75,7 @@ public sealed class ScoutWebSearch(HttpClient http, IConfiguration config)
             return Parse(document, false);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or UnauthorizedAccessException or JsonException
-            or InvalidOperationException or ArgumentException || ex is OperationCanceledException && !ct.IsCancellationRequested)
+            or InvalidOperationException or ArgumentException or Azure.Identity.AuthenticationFailedException || ex is OperationCanceledException && !ct.IsCancellationRequested)
         { return Unavailable; }
     }
 

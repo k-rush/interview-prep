@@ -76,7 +76,7 @@ internal static partial class ChatModule
             s.Revision % 2 == 0 ? "Tell me about one project from that role. What were you trying to change?" : "What did you personally do, and what changed afterward?";
         if (grounded && !recall && !reply.Contains('?'))
             reply += statement ? " Which decision was yours?" : " What example would you like to explore?";
-        return new(reply, grounded ? "local model" : Model ? "model unavailable · guided reply" : "offline guide", kind, label, statement,
+        return new(reply, grounded ? LocalCoach.Label : Model ? "model unavailable · guided reply" : "offline guide", kind, label, statement,
             recall ? hits : [], !statement && hits.Length == 0 && notes.Length == 0);
     }
 

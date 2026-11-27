@@ -39,6 +39,7 @@ export function DailySearchSetting({ data, busy, act }: Props) {
     api<Daily>("account/daily-search").then(s => { if (live) { setDaily(s); setError(""); } }).catch(e => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [data]);
+  if (data.privateTest) return <section><h2>Job search</h2><p>Search on demand in this temporary staging workspace. No searches run in the background.</p></section>;
   return <section><h2>Daily job search</h2>
     <p>Repeat the public search from chat once a day while the app is running. Only the public role title is sent to the search provider; matching against your workspace happens here.</p>
     {error && <p role="alert">{error}</p>}

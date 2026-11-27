@@ -112,6 +112,7 @@ test('dropping a document files its summary and cited history without intake fie
   const main = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
     '<w:p><w:r><w:t>We designed Project Cedar.</w:t></w:r></w:p><w:p><w:r><w:t>Our team reviewed the checklist.</w:t></w:r></w:p></w:body></w:document>';
   const zip = zipSync({'word/document.xml':Buffer.from(main), 'word/comments.xml':Buffer.from('Private comment never sent.')});
+  await zone.getByRole('button', {name:'Choose file', exact:true, disabled:false}).waitFor();
   await zone.getByRole('heading', {name:'Drop a document here'}).evaluate((el, bytes) => {
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(new File([new Uint8Array(bytes)], 'review.docx'));

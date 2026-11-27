@@ -24,7 +24,7 @@ public static partial class DiscoveryModule
             .RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(ScoutWebSearch.Transport);
         services.AddScoped<DiscoveryScout>();
         services.AddHostedService<DiscoveryEvidenceObserver>();
-        services.AddHostedService<DiscoveryTimer>();
+        if (!PrivateStaging.Enabled) services.AddHostedService<DiscoveryTimer>();
     }
 
     public static void Map(WebApplication app)

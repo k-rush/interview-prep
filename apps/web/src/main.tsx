@@ -24,7 +24,7 @@ function Sample({ standalone = false }: { standalone?: boolean }) {
         <button className="quiet" onClick={() => setPick("")}>Reset sample</button></div>}</section></div>;
 }
 
-function Home() {
+function Home({ privateTest }: { privateTest: boolean }) {
   const [error,setError] = useState(""), [busy,setBusy] = useState(false);
   async function open(prompt?: string) {
     if (busy) return;
@@ -40,15 +40,15 @@ function Home() {
     <div className="welcome-copy"><p className="eyebrow"><span className="short-rule"/>Your job search workspace</p>
       <h1>Let’s work on<br/><em>your next move.</em></h1>
       <p className="intro">Find roles that fit, turn your experience into a stronger resume, and walk into interviews prepared. Start with a conversation.</p>
-      <div className="actions"><button disabled={busy} onClick={() => void open()}>Open my local workspace <Icon name="arrow"/></button>
+      <div className="actions"><button disabled={busy} onClick={() => void open()}>Open my {privateTest ? "test" : "local"} workspace <Icon name="arrow"/></button>
         <a className="button quiet" href="#sample">Try a fictional sample</a></div>
       {error && <p role="alert">{error}</p>}
-      <p className="welcome-note"><Icon name="lock"/>No card or account needed. Your local workspace is stored on this computer. Use non-confidential examples on a shared device.</p>
+      <p className="welcome-note"><Icon name="lock"/>{privateTest ? "Private Azure test. Use fictional examples only. Chats and relevant saved context go to Azure OpenAI; test data is deleted when staging expires." : "No card or account needed. Your local workspace is stored on this computer. Use non-confidential examples on a shared device."}</p>
     </div>
     <section className="start-panel"><div className="panel-heading"><Compass/><span>Job search coach</span></div>
       <h2>Where would you like to start?</h2><div className="start-list">{starts.map(s =>
         <button className="intent" key={s.slug} disabled={busy} onClick={() => void open(s.slug)}><StarterLabel {...s}/></button>)}</div>
-      <small>Choose a prompt to edit or send in your local workspace.</small>
+      <small>Choose a prompt to edit or send in your workspace.</small>
     </section></div>;
 }
 
@@ -81,7 +81,7 @@ function Studio({ page = "chat", id }: { page?: string; id?: string }) {
   const chatId = page === "chat" ? id : mock?.chatSession && page !== "debrief" ? mock.id : undefined;
   return <WorkspaceShell page={page} routeId={id} chatId={chatId} sessions={sessions} listError={listError}
     onNewChat={e => { if (page === "chat" && !id && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) setBlankChat(n => n + 1); }}
-    localAI={data.localCoachEnabled} inChat={page === "chat" || page === "new" || !!chatId}>
+    localAI={data.localCoachEnabled} privateTest={data.privateTest} inChat={page === "chat" || page === "new" || !!chatId}>
     {error && <p role="alert" className="error">{error}</p>}
     {page === "library" ? <Experience {...props}/> :
       page === "prep" ? <PreparationView {...props} key={id} initialTarget={id}/> : page === "live" ? <LiveGuideView {...props}/> :
@@ -99,14 +99,15 @@ function Studio({ page = "chat", id }: { page?: string; id?: string }) {
 }
 
 function App() {
+  const privateTest = !!document.querySelector('meta[name="private-synthetic-test"]');
   const [hash,setHash] = useState(() => { const q = new URLSearchParams(location.search);return q.get("mode")==="signIn" || q.has("link") ? "#signin" : location.hash; });
   useEffect(() => { const changed = () => {setHash(location.hash);window.scrollTo(0,0);}; addEventListener("hashchange",changed);return () => removeEventListener("hashchange",changed);},[]);
   const [root,page,id] = hash.slice(1).split("/"), studio = root === "workspace";
   if (studio) return <Studio page={page || undefined} id={id}/>;
   return <div className="public-shell"><header className="public-bar"><Brand href="#"/>
-    {root !== "signin" && <a className="button quiet" href="#signin">Sign in <Icon name="arrow"/></a>}</header>
+    {!privateTest && root !== "signin" && <a className="button quiet" href="#signin">Sign in <Icon name="arrow"/></a>}</header>
     <main>{root === "sample" ? <Sample/> : root === "signin" ? <div className="public-page"><a className="back-link" href="#">Back to start</a>
-      <p className="eyebrow">Your workspace</p><h1>Account sign-in</h1><LandingAccount/></div> : <Home/>}</main></div>;
+      <p className="eyebrow">Your workspace</p><h1>Account sign-in</h1><LandingAccount/></div> : <Home privateTest={privateTest}/>}</main></div>;
 }
 createRoot(document.getElementById("root")!).render(location.pathname === "/demo"
   ? <div className="public-shell"><main><Sample standalone/></main></div> : <App/>);

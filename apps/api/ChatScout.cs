@@ -55,7 +55,7 @@ internal static partial class ChatModule
         if (digest is not null)
         {
             s.DigestId = digest;
-            if (!await DailySearch.Enabled(db, owner, ct) && await AccountsModule.AllowScoutAsync(db, owner))
+            if (!PrivateStaging.Enabled && !await DailySearch.Enabled(db, owner, ct) && await AccountsModule.AllowScoutAsync(db, owner))
             {
                 s.Stage = "search:offer"; s.ContextJson = JsonSerializer.Serialize(new SearchOffer(step.Role, zone));
                 report += $"\n\nWould you like me to search for {step.Role} daily while the app is running? Say yes or no. You can change this in Account.";

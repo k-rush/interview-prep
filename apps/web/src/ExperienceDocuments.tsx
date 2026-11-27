@@ -78,7 +78,7 @@ export function DocumentImport({ change, busy, compact = false }: { change: Act;
         onChange={e => { const files = Array.from(e.currentTarget.files ?? []); e.currentTarget.value = ""; submit(files); }} />
       {!compact && <small>Text PDF, DOCX, TXT, Markdown or CSV. Up to 3 MiB and 100,000 characters.</small>}
     </div>
-    {!compact && <><p className="privacy-line">Share only text you can use with your local AI. The original file is not kept. New statements need review before use in drafts or live reminders.</p>
+    {!compact && <><p className="privacy-line">Share only text you can use with the configured model. The original file is not kept. New statements need review before use in drafts or live reminders.</p>
     <details><summary>Paste text or a link instead</summary>
       <form onSubmit={e => { e.preventDefault(); submit([text]); }}>
         <label>Document text or bookmark<textarea value={text} disabled={busy} onChange={e => setText(e.target.value)} maxLength={100_000} rows={4}

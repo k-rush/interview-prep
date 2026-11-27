@@ -1,0 +1,90 @@
+name: Private synthetic test
+on:
+  workflow_dispatch:
+    inputs:
+      publish_only:
+        description: Publish the first image without replacing a running workspace
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: private-synthetic-test
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/verify.yml
+  stage:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: private-test
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACR: ${{ secrets.TEST_ACR }}
+      GROUP: ${{ secrets.TEST_GROUP }}
+      SUB: ${{ secrets.TEST_SUBSCRIPTION }}
+      EXPIRES: ${{ vars.TEST_EXPIRES }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require an active operator-created window
+        run: |
+          set -euo pipefail
+          [[ "$GROUP" =~ ^rg-interview-prep-synthetic-[a-z0-9-]+$ && "$ACR" =~ ^iptest[a-z0-9]+$ ]]
+          end=$(date -u -d "$EXPIRES" +%s); now=$(date -u +%s)
+          (( end > now && end <= now + 86400 ))
+      - uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
+        with:
+          client-id: ${{ secrets.TEST_PUBLISHER }}
+          tenant-id: ${{ secrets.TEST_TENANT }}
+          subscription-id: ${{ secrets.TEST_SUBSCRIPTION }}
+      - name: Publish reviewed Linux image
+        id: image
+        run: |
+          set -euo pipefail
+          az acr login -n "$ACR" --only-show-errors >/dev/null
+          image="$ACR.azurecr.io/interview-prep"
+          docker buildx build --platform linux/amd64 --build-arg SOURCE_REVISION="$GITHUB_SHA" \
+            --tag "$image:git-$GITHUB_SHA" --metadata-file "$RUNNER_TEMP/image.json" --push .
+          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[a-f0-9]{64}$"))' "$RUNNER_TEMP/image.json")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          printf 'Reviewed commit: `%s`\n\nDigest: `%s`\n' "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Replace the single writer in the existing private test only
+        if: ${{ !inputs.publish_only }}
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          id="https://management.azure.com/subscriptions/$SUB/resourceGroups/$GROUP/providers/Microsoft.App/containerApps/studio-test"
+          api='api-version=2024-03-01'
+          az rest -m get -u "$id?$api" -o json > "$RUNNER_TEMP/app.json"
+          jq -e --arg end "$EXPIRES" '.properties.template |
+            .scale.maxReplicas == 1 and (.containers | length) == 1 and
+            (.containers[0].env | any(.name == "INTERVIEW_PREP_PLANE" and .value == "private-test")) and
+            (.containers[0].env | any(.name == "INTERVIEW_PREP_TEST_EXPIRES" and .value == $end))' "$RUNNER_TEMP/app.json" >/dev/null
+          jq --arg image "$ACR.azurecr.io/interview-prep@$DIGEST" --arg revision "run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            '{properties:{template:(.properties.template | .containers[0].image=$image | .revisionSuffix=$revision)}}' "$RUNNER_TEMP/app.json" > "$RUNNER_TEMP/patch.json"
+          az rest -m post -u "$id/stop?$api" -o none
+          for _ in {1..60}; do
+            status=$(az rest -u "$id?$api" --query properties.runningStatus -o tsv)
+            [[ "$status" != Stopped ]] || break; sleep 5
+          done
+          [[ "$status" == Stopped ]]
+          az rest -m patch -u "$id?$api" -b "@$RUNNER_TEMP/patch.json" -o none
+          for _ in {1..60}; do
+            state=$(az rest -u "$id?$api" --query properties.provisioningState -o tsv)
+            [[ "$state" != Succeeded ]] || break; sleep 5
+          done
+          [[ "$state" == Succeeded ]]
+          az rest -m post -u "$id/start?$api" -o none
+          host=$(jq -er '.properties.configuration.ingress.fqdn | select(test("^studio-test\\.[a-z0-9.-]+\\.azurecontainerapps\\.io$"))' "$RUNNER_TEMP/app.json")
+          for _ in {1..36}; do
+            code=$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "https://$host/api/workspace" || true)
+            [[ "$code" != 401 ]] || break; sleep 5
+          done
+          [[ "$code" == 401 ]]

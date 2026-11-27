@@ -15,7 +15,7 @@ export function Round({ mock, data, act, busy }: { mock: Mock; data: Workspace; 
     .map(f => ({f, fit:[...words(f.project+" "+f.claim)].filter(w=>terms.has(w)).length})).filter(x=>x.fit>0).sort((a,b)=>b.fit-a.fit).slice(0,3);
   return <>
     <a href="#workspace">Back to workspace</a>
-    <p className="eyebrow">Hiring-manager practice / {mock.rubric} / {mock.tailored ? "locally tailored questions" : "standard questions"}</p>
+    <p className="eyebrow">Hiring-manager practice / {mock.rubric} / {mock.tailored ? "tailored questions" : "standard questions"}</p>
     <h1>{report ? "Your debrief" : "Practice round"}</h1>
     <p className="target">{mock.target}</p>
     {!report && index < probes.length && <section>
@@ -27,14 +27,14 @@ export function Round({ mock, data, act, busy }: { mock: Mock; data: Workspace; 
         <VoiceInput value={answer} onChange={setAnswer} label="Your answer" required maxLength={3000} name="text" prompt={mock.questions[index]} />
         <button disabled={busy}>Save answer</button>
       </form>
-      <p className="muted">Work examples in submitted answers update your job history and agent memory. They still need review before use in applications. {mock.adaptive && "The local coach may adapt the next probe to your answer. "}
+      <p className="muted">Work examples in submitted answers update your job history and agent memory. They still need review before use in applications. {mock.adaptive && "The coach may adapt the next probe to your answer. "}
         You can leave between questions and resume; an unfinished round has no grade.</p>
     </section>}
     {!report && index === probes.length && <section>
       <h2>Assess the transcript</h2>
       <p>Only these four answers count. Impact must reach 3/4 and the total must reach 75/100 for a simulated hire.</p>
-      {data.localCoachEnabled && <div className="callout"><p>The local model will receive the role and four answers, not your experience library. No cloud model is configured.</p>
-        <button disabled={busy} onClick={() => void submit("report", { assessor: "local" })}>Ask the local coach</button></div>}
+      {data.localCoachEnabled && <div className="callout"><p>{data.privateTest ? "Azure OpenAI will receive the fictional role, questions and four answers, not your experience library." : "The local model will receive the role and four answers, not your experience library. No cloud model is configured."}</p>
+        <button disabled={busy} onClick={() => void submit("report", { assessor: data.privateTest ? "azure" : "local" })}>Ask the {data.privateTest ? "Azure" : "local"} coach</button></div>}
       <h3>Offline wording screen</h3><p>Get immediate feedback without a model or self-ratings. This checklist looks for evidence in the wording of each answer. It can miss paraphrases, cannot judge truth, and awards at most 3/4 per answer.</p>
       <button disabled={busy} onClick={()=>void submit("report",{assessor:"wording-v1"})}>Run offline wording screen</button>
       <h3>Self-assessment</h3>
@@ -55,7 +55,7 @@ export function Round({ mock, data, act, busy }: { mock: Mock; data: Workspace; 
       </form>
     </section>}
     {report && <>
-      <section><p className="eyebrow">{report.assessor === "self" ? "Self-assessed / not an AI evaluation" : report.assessor === "local" ? "Local model assessment / not calibrated" : "Offline wording screen / limited confidence / not an AI evaluation"}</p>
+      <section><p className="eyebrow">{report.assessor === "self" ? "Self-assessed / not an AI evaluation" : report.assessor === "azure" ? "Azure OpenAI assessment / not calibrated" : report.assessor === "local" ? "Local model assessment / not calibrated" : "Offline wording screen / limited confidence / not an AI evaluation"}</p>
         <h2>{report.score}/100 ({report.grade}) &middot; {report.verdict}</h2>
         <p>A practice decision, not an employer prediction. The pass line is 75 and impact must be at least 3/4.</p>
         {report.marks.map((m, i) => <div className="item" key={probes[i].name}>
@@ -113,7 +113,7 @@ function Review({mock,data,act,busy}:{mock:Mock;data:Workspace;act:Act;busy:bool
         await api(`${path}/challenges`,"POST",{turn,excerpt:body.excerpt,note:body.note,askLocalCoach:body.second==="on"});await refresh();
       });}}><label>Passage from your answer<textarea name="excerpt" required maxLength={320} defaultValue={mock.report!.marks[turn].quote}/></label>
         <label>Why you disagree<textarea name="note" required maxLength={600}/></label>
-        {data.localCoachEnabled && <label><input type="checkbox" name="second"/> Request a second local scoring pass on the original transcript</label>}
+        {data.localCoachEnabled && <label><input type="checkbox" name="second"/> Request a second model scoring pass on the original transcript</label>}
         <button disabled={busy}>Save challenge</button></form>
       {review?.challenges.map(c=><div className="item" key={c.turn}><strong>{data.probes[c.turn].name} challenge</strong><blockquote>{c.excerpt}</blockquote>
         <p>{c.note}</p><p>{c.secondOpinion ?? "No validated second opinion recorded."}</p></div>)}</details>

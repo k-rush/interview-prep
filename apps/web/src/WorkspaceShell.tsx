@@ -40,8 +40,8 @@ function Sidebar({ page, chatId, sessions, listError, onNewChat, close }: Naviga
   </div>;
 }
 
-export function WorkspaceShell({ page, chatId, sessions, listError, onNewChat, routeId, localAI, inChat, children }: Navigation & {
-  routeId?: string; localAI: boolean; inChat: boolean; children: ReactNode;
+export function WorkspaceShell({ page, chatId, sessions, listError, onNewChat, routeId, localAI, privateTest, inChat, children }: Navigation & {
+  routeId?: string; localAI: boolean; privateTest?: boolean; inChat: boolean; children: ReactNode;
 }) {
   const drawer = useRef<HTMLDialogElement>(null), main = useRef<HTMLElement>(null);
   const [open, setOpen] = useState(false);
@@ -70,7 +70,7 @@ export function WorkspaceShell({ page, chatId, sessions, listError, onNewChat, r
       <button className="icon-button mobile-control" type="button" aria-label="Open navigation" aria-expanded={open}
         aria-controls="workspace-menu" onClick={() => setOpen(true)}><Icon name="panel"/></button>
       <div className="breadcrumb"><span>Workspace</span><i aria-hidden="true">/</i><strong>{title}</strong></div>
-      <span className="engine"><span aria-hidden="true"/>{localAI ? "Local AI" : "Offline guide"}</span>
+      <span className="engine"><span aria-hidden="true"/>{privateTest ? "Azure OpenAI · fictional data only" : localAI ? "Local AI" : "Offline guide"}</span>
       <a className="icon-button mobile-control" href="#workspace" onClick={onNewChat} aria-label="New chat"><Icon name="newChat"/></a>
     </header>
     <main id="workspace-main" tabIndex={-1} ref={main} className={inChat ? "workspace-main chat-main" : "workspace-main"}>

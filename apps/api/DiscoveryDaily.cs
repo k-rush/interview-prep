@@ -34,6 +34,7 @@ internal static class DailySearch
     // The caller owns the transaction and SaveChanges; changing settings performs no search.
     internal static async Task<string?> Set(PracticeDb db, Guid owner, bool enabled, string? role, string? zone, CancellationToken ct)
     {
+        if (enabled && PrivateStaging.Enabled) return "Use an on-demand search in private staging; automatic searches are disabled.";
         if (enabled && !await AccountsModule.AllowScoutAsync(db, owner)) return Denied;
         if (zone is not null && !DiscoveryCalendar.Valid(zone, DeliveryTime)) return "Use a valid IANA time zone.";
         var s = await db.Set<DiscoverySettings>().SingleOrDefaultAsync(x => x.WorkspaceId == owner, ct);

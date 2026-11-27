@@ -48,6 +48,8 @@ Open **http://127.0.0.1:5187** and choose **Open my local workspace**. Chat open
 
 The root `Dockerfile` builds a non-root image. For live hosting, the [Azure demo deployment runbook](docs/deploy-demo.md) sets up GitHub Actions, OIDC, a registry and two Azure Container Apps rings. The **public demo** serves the fictional sample only: no workspaces, database, background workers, billing or paid searches. Production requires a tested staging digest and approval. Running the studio locally does not provision Azure or enable releases. Hosting real candidate data requires a separate persistence, backup and identity rollout.
 
+To try the coach, mock interview and public job scout with a real model, use the separate [private, 24-hour Azure test](docs/private-test.md). It requires the designated Microsoft Entra user and fictional inputs. It does not activate the public demo or production.
+
 ```mermaid
 flowchart LR
     Entry["Resume, LinkedIn export, or conversation"] --> Builder["Context builder: ask, extract, clarify"]

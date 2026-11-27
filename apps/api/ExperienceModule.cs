@@ -111,7 +111,7 @@ public static partial class ExperienceModule
     private static Guid Owner(HttpContext c) => (Guid)c.Items["workspace"]!;
     private static bool Valid(string? s, int max) => !string.IsNullOrWhiteSpace(s) && s.Length <= max;
     private static bool Optional(string? s, int max) => s is null || s.Length <= max;
-    private static bool ModelEnabled => Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is not null;
+    private static bool ModelEnabled => LocalCoach.Enabled;
     private static IResult Full() => Results.Json("This workspace has reached its allowance for this action.", statusCode: 429);
 
     public static void Configure(ModelBuilder model)
@@ -278,7 +278,7 @@ public static partial class ExperienceModule
         }
         if (input.Excerpts.Length == 0 && url == null || input.Category == "project-bookmark" && url == null)
             return Results.BadRequest("Select a passage, or save a project URL as a bookmark.");
-        if (input.UseModel && !ModelEnabled) return Results.BadRequest("No local model is configured. Save without model extraction.");
+        if (input.UseModel && !ModelEnabled) return Results.BadRequest("No model is configured. Save without model extraction.");
         var node = input.NodeId == null ? null : await db.Set<ExperienceNode>().AsNoTracking()
             .SingleOrDefaultAsync(n => n.WorkspaceId == owner && n.Id == input.NodeId, ct);
         if (input.NodeId != null && node == null) return Results.NotFound();

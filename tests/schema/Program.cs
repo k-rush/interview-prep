@@ -88,3 +88,4 @@ if (args.Length == 0)
 Console.WriteLine("Compatible schema; records preserved on the isolated copy.");
 await ScoutWebSearchChecks.Run();
 Console.WriteLine("Scout web search request, citation validation and failure checks passed.");
+await PrivateStagingChecks.Run();

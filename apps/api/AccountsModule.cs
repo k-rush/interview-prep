@@ -136,7 +136,7 @@ public static partial class AccountsModule
     public static void Map(WebApplication app)
     {
         app.MapGet("/api/account/config", () => Results.Ok(new { enabled = FirebaseEnabled,
-            webApiKey = FirebaseEnabled ? WebKey : null, localWorkspace = LocalWorkspaceEnabled }));
+            webApiKey = FirebaseEnabled ? WebKey : null, localWorkspace = LocalWorkspaceEnabled, privateTest = PrivateStaging.Enabled }));
         app.MapPost("/api/account/login", Login);
         app.MapPost("/api/account/logout", async (HttpContext c, PracticeDb db) =>
         {
@@ -205,8 +205,10 @@ public static partial class AccountsModule
     public static async Task<bool> AllowScoutAsync(PracticeDb db, Guid owner)
     {
         var a = await db.Set<AccountProfile>().AsNoTracking().SingleOrDefaultAsync(x => x.WorkspaceId == owner);
-        return a is null ? LocalWorkspaceEnabled && await db.Workspaces.AnyAsync(x => x.Id == owner) : HasPrep(a);
+        return a is null ? await IsTestOrLocal(db, owner) : HasPrep(a);
     }
+    private static Task<bool> IsTestOrLocal(PracticeDb db, Guid owner) =>
+        db.Workspaces.AnyAsync(w => w.Id == owner && (LocalWorkspaceEnabled || PrivateStaging.Enabled && w.TokenHash == PrivateStaging.WorkspaceMarker));
     public static Task<bool> TryReserveDraftAsync(PracticeDb db, Guid owner, string operationKey) => Reserve(db, owner, "drafts", operationKey);
     public static Task<bool> TryReserveMockAsync(PracticeDb db, Guid owner, string operationKey) => Reserve(db, owner, "mocks", operationKey);
     public static Task<bool> TryReserveImportAsync(PracticeDb db, Guid owner, string operationKey) => Reserve(db, owner, "imports", operationKey);
@@ -222,7 +224,7 @@ public static partial class AccountsModule
         // The caller may include the durable effect in this same SQLite write transaction.
         await using var tx = db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync() : null;
         var a = await db.Set<AccountProfile>().AsNoTracking().SingleOrDefaultAsync(x => x.WorkspaceId == owner);
-        if (a is null) return LocalWorkspaceEnabled && await db.Workspaces.AnyAsync(x => x.Id == owner);
+        if (a is null) return await IsTestOrLocal(db, owner);
         var paid = HasPrep(a);
         var scope = Grant(a, paid);
         var cap = Limit(meter, paid);
@@ -244,7 +246,7 @@ public static partial class AccountsModule
         if (c.Items["workspace"] is not Guid owner) return Results.Unauthorized();
         var a = await db.Set<AccountProfile>().AsNoTracking().SingleOrDefaultAsync(x => x.WorkspaceId == owner, c.RequestAborted);
         if (a is null)
-            return Results.Ok(new { tier = LocalWorkspaceEnabled ? "Local sandbox" : "Unavailable", signedIn = false,
+            return Results.Ok(new { tier = PrivateStaging.Enabled ? "Private synthetic test" : LocalWorkspaceEnabled ? "Local sandbox" : "Unavailable", signedIn = false,
                 checkoutEnabled = false, portalEnabled = false, usage = Array.Empty<object>() });
         if (Session(c)?.WorkspaceId != owner) return Results.Unauthorized();
         var paid = HasPrep(a);

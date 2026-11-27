@@ -57,7 +57,7 @@ internal static partial class ChatModule
     internal sealed record TurnInput(string? Text, Guid RequestId, int? Revision, string? Zone, string? Action);
     internal sealed record SearchInput(string? Query);
     internal sealed record VoteInput(string? Vote);
-    private static bool Model => Environment.GetEnvironmentVariable("INTERVIEW_PREP_MODEL_PORT") is not null;
+    private static bool Model => LocalCoach.Enabled;
     private static Guid Owner(HttpContext c) => (Guid)c.Items["workspace"]!;
     private static IQueryable<ChatSession> Owned(PracticeDb db, Guid owner) => db.Set<ChatSession>().Where(s => s.WorkspaceId == owner);
     private static DateTime Utc(DateTime d) => DateTime.SpecifyKind(d, DateTimeKind.Utc);
