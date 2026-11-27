@@ -20,7 +20,8 @@ The [Understory reference](https://github.com/k-rush/understory) is access-contr
 ```mermaid
 flowchart TB
     Browser["Candidate browser: practice, evidence editor, local live cue selector"]
-    Auth["Managed identity provider: Firebase Auth"]
+    Auth["Customer sign-in: Microsoft Entra External ID"]
+    Providers["Apple, Google, personal Microsoft accounts"]
     Pay["Stripe Checkout, Portal and webhooks"]
     subgraph App["Application boundary: one Azure region at launch"]
         API["Container App: web assets + API + interactive turn runner"]
@@ -36,8 +37,9 @@ flowchart TB
     Sources["Permitted search, company sites, licensed feeds / ATS boards"]
     Mail["Transactional email"]
     Browser -->|same-origin HTTPS + streaming| API
-    Browser --> Auth
-    API -->|verify identity| Auth
+    Browser -->|branded hosted sign-in| Auth
+    Auth <-->|federated sign-in| Providers
+    API -->|redeem authorization code| Auth
     API <-->|hosted billing + signed events| Pay
     Browser -->|scoped upload only| Blob
     API --> DB
@@ -59,6 +61,29 @@ flowchart TB
 ```
 
 Run one warm API replica for a paid interactive launch; prelaunch can tolerate cold starts. Scale the worker on queue depth down to zero. The timer uses the worker image with a different command; it is not a scheduler per user. Use private database access, separate identities per deployment, Key Vault for provider secrets, and separate **staging and production** resources. No Kubernetes, always-on inference, graph DB, Redis, message per streamed token, or general-purpose web browser for the model. Use Postgres full-text search and explicit links first; consider `pgvector` only if a labeled retrieval benchmark shows missed relevant stories. Use a CDN/edge tier when latency or traffic warrants its fixed cost.
+
+### Customer sign-in
+
+The `customer` application profile implements this flow. The [operator setup guide](customer-sign-in.md) covers the external tenant, branded assets, provider registrations and separate customer deployment.
+
+Use a dedicated **Microsoft Entra External ID external tenant** for customers, not guest invitations in the workforce tenant used for the [private test](private-test.md). A candidate should see **Interview Prep**, not instructions to create an Azure or Microsoft account. Use one Microsoft-hosted sign-up/sign-in flow: it supports federation without Interview Prep handling passwords. Apply the existing compass mark, favicon, colors, and privacy and terms links through [company branding](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-customize-branding-customers). The Apple, Google, or Microsoft account picker, consent, and credential screens still belong to that provider. A [custom login domain](https://learn.microsoft.com/en-us/entra/external-id/customers/concept-custom-url-domain) is optional; the default hosted domain works for a pilot without adding Front Door charges.
+
+| What the candidate chooses | How it works |
+| --- | --- |
+| **Continue with Apple** | Configure [Apple federation](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-apple-federation-customers) with an Apple Developer Services ID and registered return URL. Accept Hide My Email; don't require the underlying address. Schedule client-secret renewal before its six-month expiry. |
+| **Continue with Google** | Configure [Google federation](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-google-federation-customers) with a Google web OAuth client and the Interview Prep consent-screen identity. Request sign-in information, not Gmail or Drive access. |
+| **Continue with Microsoft** | Configure [personal Microsoft accounts](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-microsoft-accounts-federation-customers) as an OpenID Connect (OIDC) provider in the flow. This is consumer sign-in, not blanket access for work/school tenants. Add organizational federation separately if needed. |
+| **Create an Interview Prep account** | Use Entra's local email/password account. Verify a recovery email, collect a unique **username**, and let the candidate return with username + password. Entra hosts password creation and reset; social users don't need a second password. |
+
+**Launch decision:** Microsoft lists [non-email username sign-in and sign-up](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-sign-in-alias) as [preview](https://learn.microsoft.com/en-us/entra/external-id/customers/concept-supported-features-customers#methods-and-journeys-by-approach). The alias is in addition to a verified email, not an email-free account. Pilot the literal username flow. If preview dependencies are unacceptable for production, don't silently substitute email login or a display name: defer launch or evaluate a single alternative broker such as [Auth0 with username sign-in](https://auth0.com/docs/authenticate/database-connections/require-username).
+
+**From sign-in to workspace:**
+
+1. React navigates to a same-origin sign-in endpoint. ASP.NET starts OIDC authorization code + PKCE with the customer tenant and an exact registered callback. ASP.NET's OIDC middleware checks state and nonce, redeems the code server-side, and validates the token's signature, issuer, audience, and expiry. The app trusts the customer tenant's tokens, not raw Apple, Google, or Microsoft tokens.
+2. Resolve the validated `(issuer, subject)` to the [internal candidate ID](data-model.md#logical-model), retaining the existing `AccountProfile.WorkspaceId` as the owner. First sign-in atomically creates the mapping and a new private workspace; repeat sign-in reuses it. Issue a short-lived, revocable app session in a Secure, HttpOnly, SameSite cookie. React gets neither identity tokens nor passwords. Derive ownership, billing and usage from the session on every request.
+3. Offer **Account > Sign-in methods** for explicit linking: require fresh proof of the current identity and the new one before adding a mapping. Reject an identity already attached to another workspace; never merge on email, even when verified. Don't allow unlinking the last method. Treat email as contact data which may change, be absent, or be an Apple relay address. Revoke the local session on sign-out; require fresh authentication for linking, export-all, billing changes and deletion.
+
+**Rollout boundary:** The legacy account flow is Firebase email-link; the private test uses one Entra tester and **one shared synthetic workspace**. Neither is the customer deployment. Customer mode uses its own store and sessions. Existing Firebase workspaces can migrate only after proof of both logins; data, subscriptions and allowances stay attached to the same owner. In separate customer staging, exercise all four choices, username collision and reset, Apple relay, linking and sign-out. Verify two customers cannot read each other's data before enabling customer traffic or model spend.
 
 ### Runtime capabilities
 

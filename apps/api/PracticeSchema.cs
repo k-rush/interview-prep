@@ -19,7 +19,7 @@ public static class PracticeSchema
             return scalar ? await cmd.ExecuteScalarAsync() : await cmd.ExecuteNonQueryAsync();
         }
         var version = Convert.ToInt32(await Query("PRAGMA user_version", true));
-        if (version > 7) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
+        if (version > 8) throw new InvalidOperationException("This workspace requires a newer studio. No changes were made.");
         if (version < 7 && Convert.ToInt32(await Query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='ChatNote'", true)) == 1 &&
             Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('ChatNote') WHERE name='FactId'", true)) == 0)
         {
@@ -78,6 +78,19 @@ public static class PracticeSchema
             await Query("PRAGMA user_version=6");
         }
         if (version < 7) await Query("PRAGMA user_version=7");
+        if (version < 8)
+        {
+            await Query("""
+                CREATE TABLE IF NOT EXISTS CustomerLogins (Id TEXT NOT NULL PRIMARY KEY, WorkspaceId TEXT NOT NULL,
+                    Issuer TEXT NOT NULL, Subject TEXT NOT NULL, Label TEXT NOT NULL,
+                    FOREIGN KEY (WorkspaceId) REFERENCES AccountProfiles (WorkspaceId) ON DELETE CASCADE);
+                CREATE UNIQUE INDEX IF NOT EXISTS IX_CustomerLogins_Issuer_Subject ON CustomerLogins (Issuer, Subject);
+                CREATE INDEX IF NOT EXISTS IX_CustomerLogins_WorkspaceId ON CustomerLogins (WorkspaceId);
+                """);
+            if (Convert.ToInt32(await Query("SELECT count(*) FROM pragma_table_info('AccountSessions') WHERE name='LoginId'", true)) == 0)
+                await Query("ALTER TABLE AccountSessions ADD COLUMN LoginId TEXT NULL REFERENCES CustomerLogins(Id) ON DELETE CASCADE");
+            await Query("CREATE INDEX IF NOT EXISTS IX_AccountSessions_LoginId ON AccountSessions(LoginId); PRAGMA user_version=8;");
+        }
         await tx.CommitAsync();
         await db.Database.CloseConnectionAsync();
     }

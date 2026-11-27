@@ -1,0 +1,7 @@
+body, .ext-middle { background-color: #fdfdfa; }
+.ext-sign-in-box { background-color: #fff; border-radius: 12px; }
+.ext-title { color: #234b3e; font-family: Georgia, serif; }
+a, .ext-link { color: #24513f; }
+.ext-button.ext-primary { background-color: #24513f; border-color: #24513f; border-radius: 8px; color: #fff; }
+.ext-button.ext-primary:hover, .ext-button.ext-primary:active { background-color: #173d2e; }
+.ext-button:focus-visible, .ext-link:focus-visible { outline: 3px solid #24513f; outline-offset: 3px; }

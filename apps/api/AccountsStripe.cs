@@ -23,8 +23,9 @@ internal sealed partial class AccountsStripe(IHttpClientFactory clients)
     }
     // There is deliberately no live branch, live key, or client-selected Price.
     internal static bool Enabled => AccountsModule.Setting("STRIPE_MODE") == "test" &&
-        (AccountsModule.LocalWorkspaceEnabled || AccountsModule.Setting("PLANE") is "staging" or "test") &&
-        AccountsModule.FirebaseEnabled && Origin is not null && AccountsModule.NamedId(Price, "price_") &&
+        (AccountsModule.LocalWorkspaceEnabled || AccountsModule.Setting("PLANE") is "staging" or "test" ||
+            CustomerAuth.Enabled && AccountsModule.Setting("CUSTOMER_TEST_BILLING") == "1") &&
+        AccountsModule.Managed && Origin is not null && AccountsModule.NamedId(Price, "price_") &&
         (AccountsModule.NamedId(Secret, "sk_test_") || AccountsModule.NamedId(Secret, "rk_test_")) &&
         AccountsModule.NamedId(SigningSecret, "whsec_");
     private static long Now => AccountsModule.Now;

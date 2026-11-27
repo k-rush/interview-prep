@@ -28,7 +28,10 @@ builder.WebHost.ConfigureKestrel(k =>
     k.Listen(container ? IPAddress.Any : IPAddress.Loopback, port);
     k.Limits.MaxRequestBodySize = 32 * 1024;
 });
+if (!CustomerAuth.Enabled && new[] { "CUSTOMER_TENANT_ID", "CUSTOMER_CLIENT_ID", "CUSTOMER_CLIENT_SECRET" }.Any(k => AccountsModule.Setting(k) != null))
+    throw new InvalidOperationException("Customer credentials are only valid in the dedicated customer profile.");
 var staging = PrivateStaging.Enabled ? PrivateStaging.Configure(builder, container, publicOrigin) : null;
+var customer = CustomerAuth.Enabled ? CustomerAuth.Configure(builder, publicOrigin, AccountsModule.Setting("DATA")) : null;
 if (Environment.GetEnvironmentVariable("INTERVIEW_PREP_DEMO_ONLY") == "1")
 {
     if (!container || publicOrigin?.Scheme != "https")
@@ -57,7 +60,7 @@ var data = Environment.GetEnvironmentVariable("INTERVIEW_PREP_DATA") ??
     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InterviewPrep");
 if (OperatingSystem.IsWindows()) Directory.CreateDirectory(data);
 else Directory.CreateDirectory(data, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-var connection = new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, "practice.sqlite"), ForeignKeys = true };
+var connection = new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, customer != null ? "customers.sqlite" : "practice.sqlite"), ForeignKeys = true };
 using var writerLease = staging?.Restore(connection.DataSource);
 builder.Services.AddDbContext<PracticeDb>(db => db.UseSqlite(connection.ToString()));
 DiscoveryModule.Register(builder.Services);
@@ -89,6 +92,7 @@ builder.Services.AddHttpClient<LocalCoach>(http =>
 
 var app = builder.Build();
 staging?.Protect(app, publicOrigin!, connection.DataSource);
+customer?.Use(app);
 using var metrics = new Meter("InterviewPrep.Studio");
 var latency = metrics.CreateHistogram<double>("studio.api.duration", unit: "s");
 using (var scope = app.Services.CreateScope())
@@ -100,7 +104,7 @@ using (var scope = app.Services.CreateScope())
 app.Use(async (ctx, next) =>
 {
     ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; connect-src 'self'" +
-        (AccountsModule.FirebaseEnabled ? " https://identitytoolkit.googleapis.com" : "");
+        (AccountsModule.FirebaseEnabled && (customer == null || CustomerAuth.Migration) ? " https://identitytoolkit.googleapis.com" : "");
     ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
     if (ctx.Request.Path.StartsWithSegments("/api"))
@@ -147,10 +151,10 @@ app.Use(async (ctx, next) =>
             latency.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, new KeyValuePair<string, object?>("http.status", ctx.Response.StatusCode));
     }
 });
-if (staging != null)
+if (staging != null || customer != null)
 {
     var index = File.ReadAllText(Path.Combine(app.Environment.WebRootPath, "index.html"))
-        .Replace("<head>", "<head><meta name=\"private-synthetic-test\" content=\"1\">", StringComparison.Ordinal);
+        .Replace("<head>", $"<head><meta name=\"{(customer != null ? "customer-sign-in" : "private-synthetic-test")}\" content=\"1\">", StringComparison.Ordinal);
     app.Use(async (ctx, next) => {
         if (HttpMethods.IsGet(ctx.Request.Method) && ctx.Request.Path.Value is "/" or "/index.html")
             await Results.Content(index, "text/html; charset=utf-8").ExecuteAsync(ctx);
@@ -160,7 +164,7 @@ if (staging != null)
 app.UseDefaultFiles();
 app.UseStaticFiles();
 var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = staging != null ? "private-test" : "local-practice", version }));
+app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = customer != null ? "customer" : staging != null ? "private-test" : "local-practice", version }));
 app.MapGet("/readyz", async (PracticeDb db, CancellationToken ct) => await db.Database.CanConnectAsync(ct)
     ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 WorkspaceApi.Map(app, LocalCoach.Enabled);

@@ -8,6 +8,7 @@ The diagram shows key relationships, not every FK. `candidate_id` is the securit
 
 ```mermaid
 erDiagram
+    CANDIDATE ||--|{ ACCOUNT_IDENTITY : authenticates_with
     CANDIDATE ||--o{ EXPERIENCE_NODE : owns
     EXPERIENCE_NODE ||--o{ NODE_SOURCE : links
     IMPORT_ASSET ||--o{ NODE_SOURCE : attaches
@@ -39,7 +40,7 @@ Use UUIDs, UTC instants, explicit status enums, schema versions, and transaction
 
 | Area | Principal records, fields and invariants |
 | --- | --- |
-| Account and purpose | `candidate(id, issuer, subject, profile_revision, timezone, deletion_state)`; unique `(issuer, subject)`. `consent(purpose, policy_version, granted_at, revoked_at)`. Separate contact/billing identifiers from model context. `goal` stores desired role/level, geography, work preferences, explicit exclusions; never infer them from demographic proxies. |
+| Account and purpose | `candidate(id, profile_revision, timezone, deletion_state)` owns the workspace. `account_identity(candidate_id, issuer, subject)` has a unique `(issuer, subject)`; explicitly linked sign-in methods resolve to one candidate, never by email. See [customer sign-in](architecture.md#customer-sign-in). `consent(purpose, policy_version, granted_at, revoked_at)`. Separate contact/billing identifiers from model context. `goal` stores desired role/level, geography, work preferences, explicit exclusions; never infer them from demographic proxies. |
 | Experience primitives | `experience_node(id, kind, display_label)` for employment/role, project, story and skill; typed `experience_edge(from, relation, to)` for role-has-project, story-about-project, demonstrates-skill. Allow independent projects and stories spanning jobs. `fact(id, node_id, field, current_version)` and `fact_version(fact_id, version, value, unit, status, allowed_uses, confirmed_at)` represent titles, partial dates, responsibilities, personal actions, team scope, outcomes, qualifications. Uses distinguish private preparation, live reminders and drafts. A display label or permission for one use does not grant the others. |
 | Private evidence sources | `import_asset(id, category, input_kind, title, blob_key?, safe_url?, content_hash?, retrieved_at?, parse_status, allowed_uses, expires_at)` covers file, link or paste. Distinguish resume, review, written referral, project artifact, other evidence and JD. `node_source(node_id, asset_id)` attaches even a bookmark to one or more projects without asserting authorship. Reviews/referrals default to private preparation. Keep the candidate's association with a public project URL private. |
 | Provenance and changes | `source_ref(kind, asset_id + page/section/span OR turn_id/span OR manual_attestation, speaker_role, minimal_redacted_excerpt, retention)`; `fact_evidence(fact_id, version, source_ref_id)`. Validate exactly one origin, allow several independent sources per fact, distinguish third-party opinion from a candidate's own action. Use a fact only with support permitted for that purpose. `proposal(patch, source_refs, origin_run, base_revision, status, dedupe_key)` records conflicts for review. |

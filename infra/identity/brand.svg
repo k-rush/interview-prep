@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="245" height="36" viewBox="0 0 245 36">
+  <title>Interview Prep</title>
+  <svg width="36" height="36" viewBox="0 0 40 40">
+    <rect width="40" height="40" rx="12" fill="#24513f"/>
+    <path d="M30 9 23 24 10 31l7-15z" fill="#fffef2"/>
+    <path d="m10 31 7-15 6 8z" fill="#91b7a6"/>
+    <circle cx="20" cy="20" r="2" fill="#234b3e"/>
+  </svg>
+  <text x="46" y="26" fill="#234b3e" font-family="Georgia, serif" font-size="24" font-weight="bold">Interview Prep</text>
+</svg>

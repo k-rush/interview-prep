@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace InterviewPrep;
 
@@ -31,6 +32,7 @@ internal sealed class AccountSession
 {
     public required string Digest { get; set; }
     public Guid WorkspaceId { get; set; }
+    public Guid? LoginId { get; set; }
     public long AuthTime { get; set; }
     public long Expires { get; set; }
 }
@@ -56,7 +58,7 @@ internal sealed class AccountStripeEvent
 
 public static partial class AccountsModule
 {
-    private const string Cookie = "practice_account";
+    private static string Cookie => CustomerAuth.Enabled ? "__Host-interview-account" : "practice_account";
     private static readonly object SessionItem = new();
     internal static long Now => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     internal static string? Setting(string key) => Environment.GetEnvironmentVariable("INTERVIEW_PREP_" + key);
@@ -65,6 +67,8 @@ public static partial class AccountsModule
     internal static string? LookupKey => Setting("FIREBASE_SERVER_API_KEY") ?? WebKey;
     private static bool ValidKey(string? key) => key is { Length: >= 8 and <= 200 } && key.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     internal static bool FirebaseEnabled => ValidProject(Project) && ValidKey(WebKey) && ValidKey(LookupKey);
+    internal static string ActiveIssuer => CustomerAuth.Enabled ? CustomerAuth.Realm : AccountsIdentity.Issuer;
+    internal static bool Managed => CustomerAuth.Enabled || FirebaseEnabled;
     private static bool ValidProject(string? s) => s is { Length: >= 6 and <= 30 } && char.IsAsciiLetter(s[0]) &&
         s.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-') && s[^1] != '-';
     public static bool LocalWorkspaceEnabled => Setting("PLANE") is (null or "" or "local") &&
@@ -82,9 +86,14 @@ public static partial class AccountsModule
         profile.HasOne<Workspace>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
         profile.HasIndex(x => new { x.Issuer, x.Subject }).IsUnique();
         profile.HasIndex(x => x.Customer).IsUnique();
+        var login = model.Entity<CustomerLogin>();
+        login.ToTable("CustomerLogins").HasKey(x => x.Id);
+        login.HasIndex(x => new { x.Issuer, x.Subject }).IsUnique();
+        login.HasOne<AccountProfile>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
         var session = model.Entity<AccountSession>();
         session.ToTable("AccountSessions").HasKey(x => x.Digest);
         session.HasOne<AccountProfile>().WithMany().HasForeignKey(x => x.WorkspaceId).OnDelete(DeleteBehavior.Cascade);
+        session.HasOne<CustomerLogin>().WithMany().HasForeignKey(x => x.LoginId).OnDelete(DeleteBehavior.Cascade);
         session.HasIndex(x => x.Expires);
         var usage = model.Entity<AccountUsage>();
         usage.ToTable("AccountUsage").HasKey(x => new { x.WorkspaceId, x.Meter, x.Operation });
@@ -109,23 +118,27 @@ public static partial class AccountsModule
 
     public static bool IsWebhook(HttpRequest r) => HttpMethods.IsPost(r.Method) && r.Path == "/api/billing/webhook";
     public static bool IsPublic(HttpRequest r) => IsWebhook(r) || (HttpMethods.IsGet(r.Method) && r.Path == "/api/account/config") ||
-        (HttpMethods.IsPost(r.Method) && r.Path == "/api/account/login");
+        (HttpMethods.IsPost(r.Method) && (r.Path == "/api/account/login" || CustomerAuth.Migration && r.Path == "/api/account/migration"));
     private static CookieOptions Options(HttpContext c) => new() { Path = "/api", HttpOnly = true, SameSite = SameSiteMode.Strict,
         Secure = !LocalWorkspaceEnabled || c.Request.IsHttps };
+    private static CookieOptions SessionOptions(HttpContext c) => CustomerAuth.Enabled
+        ? new() { Path = "/", HttpOnly = true, SameSite = SameSiteMode.Lax, Secure = true } : Options(c);
     internal static AccountSession? Session(HttpContext c) => c.Items.TryGetValue(SessionItem, out var s) ? s as AccountSession : null;
     internal static IResult? RequireRecent(HttpContext c, Guid owner) => Session(c) is { } s && s.WorkspaceId == owner && s.Expires > Now
-        ? s.AuthTime >= Now - 600 ? null : Results.Json("Sign in again with a fresh email link for this change.", statusCode: 403)
+        ? s.AuthTime >= Now - 600 ? null : Results.Json(CustomerAuth.Enabled ? "Verify your sign-in again in Account settings for this change." :
+            "Sign in again with a fresh email link for this change.", statusCode: 403)
         : Results.Unauthorized();
 
     public static async Task<Guid?> IdentifyAsync(HttpContext c, PracticeDb db)
     {
-        if (!FirebaseEnabled || !c.Request.Cookies.TryGetValue(Cookie, out var token) || token.Length != 64) return null;
+        if (!Managed || !c.Request.Cookies.TryGetValue(Cookie, out var token) || token.Length != 64) return null;
         var digest = Hash(token);
         var now = Now;
-        var issuer = AccountsIdentity.Issuer;
+        var issuer = ActiveIssuer;
+        var customer = CustomerAuth.Enabled;
         var session = await (from s in db.Set<AccountSession>().AsNoTracking()
             join a in db.Set<AccountProfile>() on s.WorkspaceId equals a.WorkspaceId
-            where s.Digest == digest && s.Expires > now && a.Issuer == issuer
+            where s.Digest == digest && s.Expires > now && a.Issuer == issuer && (s.LoginId != null) == customer
             select s).SingleOrDefaultAsync(c.RequestAborted);
         if (session is null) return null;
         c.Items[SessionItem] = session;
@@ -135,13 +148,13 @@ public static partial class AccountsModule
     public sealed record LoginRequest(string? IdToken);
     public static void Map(WebApplication app)
     {
-        app.MapGet("/api/account/config", () => Results.Ok(new { enabled = FirebaseEnabled,
-            webApiKey = FirebaseEnabled ? WebKey : null, localWorkspace = LocalWorkspaceEnabled, privateTest = PrivateStaging.Enabled }));
+        app.MapGet("/api/account/config", () => Results.Ok(new { enabled = Managed, customer = CustomerAuth.Enabled, migration = CustomerAuth.Migration,
+            webApiKey = FirebaseEnabled && (!CustomerAuth.Enabled || CustomerAuth.Migration) ? WebKey : null, localWorkspace = LocalWorkspaceEnabled, privateTest = PrivateStaging.Enabled }));
         app.MapPost("/api/account/login", Login);
         app.MapPost("/api/account/logout", async (HttpContext c, PracticeDb db) =>
         {
             if (Session(c) is { } s) await db.Set<AccountSession>().Where(x => x.Digest == s.Digest).ExecuteDeleteAsync(c.RequestAborted);
-            c.Response.Cookies.Delete(Cookie, Options(c));
+            c.Response.Cookies.Delete(Cookie, SessionOptions(c));
             return Results.NoContent();
         });
         app.MapGet("/api/account", AccountView);
@@ -152,7 +165,7 @@ public static partial class AccountsModule
 
     private static async Task<IResult> Login(LoginRequest input, HttpContext c, PracticeDb db, AccountsIdentity verifier)
     {
-        if (!FirebaseEnabled) return Results.Json("Managed sign-in is not configured.", statusCode: 503);
+        if (!FirebaseEnabled || CustomerAuth.Enabled) return Results.Json("Email-link sign-in is not enabled here.", statusCode: 503);
         AccountsIdentity.Identity? identity;
         try { identity = await verifier.Verify(input.IdToken, c.RequestAborted); }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !c.RequestAborted.IsCancellationRequested)
@@ -172,29 +185,35 @@ public static partial class AccountsModule
             db.Add(profile);
         }
         else profile.Email = identity.Email;
+        await IssueSession(c, db, tx, profile.WorkspaceId, null, identity.AuthTime, identity.Expires);
+        return Results.NoContent();
+    }
+
+    internal static async Task IssueSession(HttpContext c, PracticeDb db, IDbContextTransaction tx, Guid owner, Guid? login, long authTime, long expires)
+    {
+        var ct = c.RequestAborted;
         if (Session(c) is { } previous)
             await db.Set<AccountSession>().Where(x => x.Digest == previous.Digest).ExecuteDeleteAsync(ct);
         var now = Now;
         await db.Set<AccountSession>().Where(x => x.Expires <= now).ExecuteDeleteAsync(ct);
-        var oldest = await db.Set<AccountSession>().Where(x => x.WorkspaceId == profile.WorkspaceId)
+        var oldest = await db.Set<AccountSession>().Where(x => x.WorkspaceId == owner)
             .OrderByDescending(x => x.Expires).ThenBy(x => x.Digest).Skip(7).Select(x => x.Digest).ToListAsync(ct);
         if (oldest.Count > 0) await db.Set<AccountSession>().Where(x => oldest.Contains(x.Digest)).ExecuteDeleteAsync(ct);
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var expiry = Math.Min(identity.Expires, now + 3600);
-        db.Add(new AccountSession { Digest = Hash(token), WorkspaceId = profile.WorkspaceId, AuthTime = identity.AuthTime, Expires = expiry });
+        var expiry = Math.Min(expires, now + 3600);
+        db.Add(new AccountSession { Digest = Hash(token), WorkspaceId = owner, LoginId = login, AuthTime = authTime, Expires = expiry });
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
-        var options = Options(c);
+        var options = SessionOptions(c);
         options.Expires = DateTimeOffset.FromUnixTimeSeconds(expiry);
         c.Response.Cookies.Append(Cookie, token, options);
-        return Results.NoContent();
     }
 
     private static readonly string[] Meters = ["mocks", "imports", "builds", "drafts", "voiceSeconds"];
     private static int Limit(string meter, bool prep) => meter switch {
         "mocks" => prep ? 8 : 1, "imports" => prep ? 40 : 2, "builds" => prep ? 100 : 20,
         "drafts" => prep ? 31 : 0, "voiceSeconds" => prep ? 120 * 60 : 0, _ => 0 };
-    private static bool HasPrep(AccountProfile a) => !a.Deleting && AccountsStripe.Enabled && a.Issuer == AccountsIdentity.Issuer && a.Price == AccountsStripe.Price &&
+    private static bool HasPrep(AccountProfile a) => !a.Deleting && AccountsStripe.Enabled && a.Issuer == ActiveIssuer && a.Price == AccountsStripe.Price &&
         a.Subscription is not null && a.BillingStatus is ("active" or "canceling") && a.LastChecked > Now - 3600 &&
         a.PeriodStart <= Now && Now < a.PeriodEnd;
     private static string Grant(AccountProfile a, bool paid) => paid ? $"test:{a.Subscription}:{a.PeriodStart}" : "free:lifetime";
@@ -228,7 +247,7 @@ public static partial class AccountsModule
         var paid = HasPrep(a);
         var scope = Grant(a, paid);
         var cap = Limit(meter, paid);
-        if (!FirebaseEnabled || a.Issuer != AccountsIdentity.Issuer || Paused(a) || cap < units) return false;
+        if (!Managed || a.Issuer != ActiveIssuer || Paused(a) || cap < units) return false;
         var inserted = await db.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO AccountUsage (WorkspaceId, Meter, Scope, Operation, Units)
             SELECT {owner}, {meter}, {scope}, {operation}, {units}
@@ -253,7 +272,9 @@ public static partial class AccountsModule
         var scope = Grant(a, paid);
         var used = await db.Set<AccountUsage>().AsNoTracking().Where(x => x.WorkspaceId == owner && x.Scope == scope)
             .GroupBy(x => x.Meter).Select(g => new { meter = g.Key, used = g.Sum(x => x.Units) }).ToDictionaryAsync(x => x.meter, x => x.used, c.RequestAborted);
-        return Results.Ok(new { tier = paid ? "Prep (Stripe test)" : "Free", signedIn = true, email = a.Email,
+        var methods = CustomerAuth.Enabled ? await db.Set<CustomerLogin>().Where(l => l.WorkspaceId == owner)
+            .OrderBy(l => l.Label).ThenBy(l => l.Id).Select(l => new { l.Id, l.Label, current = l.Id == Session(c)!.LoginId }).ToListAsync(c.RequestAborted) : null;
+        return Results.Ok(new { tier = paid ? "Prep (Stripe test)" : "Free", signedIn = true, email = a.Email, methods,
             billingStatus = a.BillingStatus, paused = Paused(a), periodStart = paid ? (long?)a.PeriodStart : null,
             periodEnd = paid ? (long?)a.PeriodEnd : null, checkoutEnabled = AccountsStripe.Enabled && !a.Deleting &&
                 a.BillingStatus is ("none" or "inactive"), portalEnabled = AccountsStripe.Enabled && a.Customer is not null && !a.Deleting,
@@ -270,5 +291,5 @@ public static partial class AccountsModule
     }
 
     public static void ClearDeletedSession(HttpContext c) =>
-        c.Response.Cookies.Delete(Session(c) is null ? "practice_workspace" : Cookie, Options(c));
+        c.Response.Cookies.Delete(Session(c) is null ? "practice_workspace" : Cookie, Session(c) is null ? Options(c) : SessionOptions(c));
 }
