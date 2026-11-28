@@ -21,7 +21,7 @@ test('the coach calls owner-scoped recall, keeps notes separate, and never reviv
   const fixture = createServer(async (req,res) => {
     let raw = '';for await(const chunk of req) raw += chunk;
     const call = JSON.parse(raw), packet = JSON.parse(call.messages[1].content); calls.push(packet);
-    const result = call.messages[0].content.includes('Select the read-only') ? {tool:{name:'search_workspace',query:'Moonrise'}} :
+    const result = !('search_workspace' in packet) ? {tool:{name:'search_workspace',query:'Moonrise'}} :
       {turn:{reply:'Which release decision did you own?',kind:'project',label:'Moonrise'}};
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(result)}}]}));
   });

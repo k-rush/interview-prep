@@ -2,7 +2,7 @@ name: Verify, publish and deploy staging
 on:
   push:
     branches: [main]
-    paths-ignore: ['docs/**', 'README.md']
+    paths-ignore: ['docs/**', 'README.md', 'apps/api/Prompts/**', 'evals/**', 'scripts/prompt-pack.mjs', 'tests/prompt-*.test.mjs', '.github/workflows/prompt-pack.yml']
   workflow_dispatch:
 permissions:
   contents: read

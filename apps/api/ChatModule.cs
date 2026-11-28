@@ -218,13 +218,15 @@ internal static partial class ChatModule
         var zone = input.Zone is { Length: > 0 and <= 80 } ? input.Zone : "UTC";
         var planning = s.Stage.StartsWith("plan:", StringComparison.Ordinal);
         var general = s.Kind != "mock" && s.Stage != "document:review" && !planning && !finish;
-        var remember = general && Is(text, @"^remember\s*:");
-        var startMock = general && !remember && Is(text, @"\b(start|begin|do|practice|try|want|run)\b.{0,24}\bmock(?: interview)?\b|^mock interview[.!]?$");
-        var practiceRequest = general && !remember && !startMock && Is(text, @"\b(practice|rehearse|try|example|sample|walk|go through|work through|ask me)\b.{0,65}\b(interview|behavioral|behavioural) questions?\b|\binterview question\b.{0,22}\btogether\b");
-        var experienceRequest = general && !remember && Is(text, @"^(?:help me |let's |i want to )?(?:add|build|update|work on)\b.{0,45}\b(?:my (?:job|work) history|my experience)\b[.!]?$");
-        var planRequest = general && !remember && !startMock && !practiceRequest && (Is(text, @"\b(plan|prepare|prep|upcoming|scheduled)\b.{0,48}\binterview\b|\bI (?:have|got) (?:an?|my next) (?:\w+ ){0,2}interview\b|\b(?:my )?interview (?:at|with|on|next|scheduled|is)\b") ||
+        // A pasted posting can mention "start a mock" or "find jobs"; its body is data, not a command.
+        var commands = general && !IsPostingMatch(text);
+        var remember = commands && Is(text, @"^remember\s*:");
+        var startMock = commands && !remember && Is(text, @"\b(start|begin|do|practice|try|want|run)\b.{0,24}\bmock(?: interview)?\b|^mock interview[.!]?$");
+        var practiceRequest = commands && !remember && !startMock && Is(text, @"\b(practice|rehearse|try|example|sample|walk|go through|work through|ask me)\b.{0,65}\b(interview|behavioral|behavioural) questions?\b|\binterview question\b.{0,22}\btogether\b");
+        var experienceRequest = commands && !remember && Is(text, @"^(?:help me |let's |i want to )?(?:add|build|update|work on)\b.{0,45}\b(?:my (?:job|work) history|my experience)\b[.!]?$");
+        var planRequest = commands && !remember && !startMock && !practiceRequest && (Is(text, @"\b(plan|prepare|prep|upcoming|scheduled)\b.{0,48}\binterview\b|\bI (?:have|got) (?:an?|my next) (?:\w+ ){0,2}interview\b|\b(?:my )?interview (?:at|with|on|next|scheduled|is)\b") ||
             s.Stage == "offered-plan" && Is(text, @"^(yes|yeah|yep|sure)\b"));
-        var search = general && !remember && !startMock && !practiceRequest && !experienceRequest && !planRequest ? SearchStep(s, text) : null;
+        var search = commands && !remember && !startMock && !practiceRequest && !experienceRequest && !planRequest ? SearchStep(s, text) : null;
         var reply = ""; var engine = "studio"; var shouldClose = finish; var recallable = !finish && !remember;
         BuilderReply? builder = null;
         MockReply? mock = null;

@@ -1,0 +1,19 @@
+{
+  "status": "completed",
+  "output": [
+    { "type": "web_search_call", "status": "completed" },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{
+        "type": "output_text",
+        "text": "Guaranteed vacancy with an immediate start and a signing bonus.",
+        "annotations": [{
+          "type": "url_citation",
+          "title": "Systems Engineer · Telemetry",
+          "url": "https://careers.example.invalid/roles/fictional-engineer"
+        }]
+      }]
+    }
+  ]
+}

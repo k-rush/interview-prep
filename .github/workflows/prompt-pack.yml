@@ -1,0 +1,45 @@
+name: Verify and package coach prompts
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/Prompts/**'
+      - 'evals/**'
+      - 'scripts/prompt-pack.mjs'
+      - 'tests/prompt-*.test.mjs'
+      - '.github/workflows/prompt-pack.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pack:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Replay synthetic conversations without a provider
+        shell: pwsh
+        run: ./dev.ps1 eval replay
+      - name: Prove compatibility and package the reviewed bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/prompt-coverage.test.mjs tests/prompt-pack.test.mjs
+          node scripts/prompt-pack.mjs build "$RUNNER_TEMP/coach-prompts.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Retain the immutable candidate; do not activate any ring
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coach-prompts-${{ github.sha }}
+          path: ${{ runner.temp }}/coach-prompts.json
+          if-no-files-found: error
+          retention-days: 30
