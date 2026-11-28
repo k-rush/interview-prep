@@ -88,7 +88,7 @@ async function openBuilder(c, goal, minutes) {
   check(detail.turns.at(-1).text, { need: [/role title/i] });
   const post = input => c.api(`${route}/turns`, 'POST', input);
   return {
-    async send(stage, text, { mode = 'answer', suggestion, inspect = () => {}, retry } = {}) {
+    async send(stage, text, { mode = 'answer', suggestion, inspect = () => {}, retry, nodeId } = {}) {
       assert.equal(detail.session.stage, stage);
       if (suggestion !== undefined) c.expect('experience.probe', suggestion, p => {
         assert.equal(p.Goal, goal);
@@ -97,7 +97,7 @@ async function openBuilder(c, goal, minutes) {
         assert.ok(p.options.length > 1 && p.options.length <= 3);
         inspect(p);
       });
-      const input = { revision: detail.session.revision, clientTurnId: randomUUID(), text, mode };
+      const input = { revision: detail.session.revision, clientTurnId: randomUUID(), text, mode, ...(nodeId ? { nodeId } : {}) };
       await post(input);
       if (retry) await post(input);
       detail = await c.api(route);
@@ -142,6 +142,39 @@ export default [
             avoid: [/\bI (?:also )?(?:negotiated|secured|closed|owned|won) (?:the|a) (?:deal|renewal|negotiation)/i]
           }, p => fromThread(p, account));
         await proposals(c, [account], { notes: [preference] });
+      } },
+      { id: 'maintainer-after-installation', async run(c) {
+        const id = await c.start(), handoff = 'I inherited a dye scanner after installation. The day shift built it before I joined.';
+        const repair = 'I traced a calibration fault to the faded reference strip and replaced the strip.';
+        await coach(c, id, handoff, 'What did you change about the scanner after the handoff?', {
+          need: [/scanner|handoff|inherit|maintenan|installation/i], avoid: [/you (?:built|invented) the scanner/i]
+        });
+        await coach(c, id, repair, 'What did the faded strip tell you about the calibration fault?', {
+          need: [/strip|calibrat|fault/i]
+        }, p => fromThread(p, handoff));
+        await coach(c, id, 'Describe where my ownership started. The scanner itself predates me.',
+          'You took over an existing scanner. You traced the calibration fault and replaced its reference strip; the original build belonged to the day shift.', {
+            need: [/inherit|existing|already|took over|handoff|after|predat|day shift|maintenance/i, /strip|calibrat/i],
+            avoid: [/\b(?:I|you) (?:built|invented|designed|installed) (?:the|a) (?:dye )?scanner/i]
+          }, p => fromThread(p, handoff, repair));
+        await proposals(c, [handoff, repair]);
+      } },
+      { id: 'shared-design-individual-check', async run(c) {
+        const id = await c.start();
+        const joint = "I paired with another typographer on the lettering grid. We can't separate who drew which strokes.";
+        const checkProof = 'I checked the contrast proof alone after we finished the grid.';
+        await coach(c, id, joint, 'Was there a separate part of the typography work you could identify as yours?', {
+          need: [/yours|your (?:own|part|contribution)|togeth|shar|pair|joint|each|individual|separat/i]
+        });
+        await coach(c, id, checkProof, 'Checking the contrast proof was your own task; making the grid was shared.', {
+          need: [/contrast|proof/i], avoid: [/you alone (?:drew|designed) the grid/i]
+        });
+        await coach(c, id, 'Give me a spoken sentence with both contributions. Keep our lettering work joint.',
+          'We designed the lettering grid together, and I checked the contrast proof myself.', {
+            need: [/\bwe\b|together|joint|pair|collaborat|co[- ]?design/i, /grid|lettering/i, /\bI\b|\bmy\b/i, /contrast|proof/i],
+            avoid: [/\bI (?:alone |single-handedly )?(?:drew|created|designed) (?:the|every|all) (?:grid|letter|stroke)/i], maxWords: 45, direct: true
+          }, p => fromThread(p, joint, checkProof));
+        await proposals(c, [joint, checkProof]);
       } }
     ]
   },
@@ -186,6 +219,23 @@ export default [
         c.expect('chat.search', { tool: { name: 'search_workspace', query: 'Copperglass' } }, p => assert.equal(p.message, lookup));
         check(prose(await c.say(id, lookup), 'workspace search'), { need: [/couldn.t find|no matching/i], avoid: [/Copperglass/i] });
         await proposals(c, [], { notes: ['Copperglass'] });
+      } },
+      { id: 'risk-without-an-incident', async run(c) {
+        const id = await c.start();
+        const problem = 'I noticed the relief staff got the duty rota only after the welcome center opened.';
+        const stake = 'I worried a desk might be left uncovered. I never saw a visitor turned away.';
+        await coach(c, id, problem, 'Who depended on the rota being ready before the doors opened?', {
+          need: [/rota|roster|schedul|duty|relief|open/i]
+        });
+        await coach(c, id, stake, 'An uncovered desk was a risk, not an incident you observed. Who needed the rota earlier?', {
+          need: [/risk|desk|rota|staff|visitor/i]
+        }, p => fromThread(p, problem));
+        await coach(c, id, 'Open the story with what was at stake, without presenting the risk as something that happened.',
+          'Relief staff received the rota after opening, so a welcome desk could have gone uncovered. I never saw anyone turned away.', {
+            need: [/desk|coverage|staff/i, /risk|might|could|potential|prevent|worr|possib|chance|in case/i, /rota|roster|schedule|shift|after opening/i],
+            avoid: [/\b(?:we|staff|the center) turned (?:visitors|people|them) away\b/i], direct: true
+          }, p => fromThread(p, problem, stake));
+        await proposals(c, [problem, stake]);
       } }
     ]
   },
@@ -214,6 +264,31 @@ export default [
             avoid: [/\bI (?:chose|picked|selected|decided)|to (?:cut|save|reduce) (?:cost|money|time)/i], maxWords: 55, direct: true
           }, p => fromThread(p, account));
         await proposals(c, [account]);
+      } },
+      { id: 'choice-changed-with-arrivals', async run(c) {
+        const id = await c.start(), original = 'I chose batch printing for wristbands when the morning roster was fixed.';
+        const reversal = 'We later accepted walk-ins. I switched to printing one wristband at a time so late arrivals could be included.';
+        await coach(c, id, original, 'What made printing in batches useful with a fixed roster?', { need: [/batch|roster|print|wristband/i] });
+        await coach(c, id, reversal, 'Walk-ins changed the constraint: the roster was no longer final when you printed the bands.', {
+          need: [/walk.in|arrival|roster|wristband|on demand/i]
+        });
+        await coach(c, id, 'How should I explain both choices without pretending the first was a mistake?',
+          'Batch printing fit a fixed roster. When we started accepting walk-ins, I switched to printing on demand so late arrivals could get a band.', {
+            need: [/batch|in advance|all at once/i, /walk.in|late arrival|unexpected arrival|unscheduled/i, /one at a time|individual|on.demand|as (?:they|people) (?:came|arrived)|each arrival/i],
+            avoid: [/printing error|printer broke|budget cut/i]
+          }, p => fromThread(p, original, reversal));
+        await proposals(c, [original, reversal]);
+      } },
+      { id: 'alternative-only-in-hindsight', async run(c) {
+        const id = await c.start();
+        const choice = 'I chose a physical spot check for the exhibit mounts. A colleague first suggested a remote camera at the debrief.';
+        await coach(c, id, choice, 'What made a spot check useful before the camera idea came up?', { need: [/spot.check|camera|mount|debrief/i] });
+        await coach(c, id, 'Could I describe the camera as an alternative I rejected at the time, or would that misstate my decision?',
+          'That would misstate the choice: the camera came up at the debrief. It is an alternative you can discuss in hindsight, not one you rejected before the spot check.', {
+            need: [/camera|remote/i, /later|after|debrief|hindsight|retrospect|not (?:considered|one you)|didn.t (?:consider|reject)|hadn.t/i],
+            avoid: [/\byou (?:tested|trialed|compared) (?:both|the camera)|\byou rejected the (?:remote )?camera because/i]
+          }, p => fromThread(p, choice));
+        await proposals(c, [choice]);
       } }
     ]
   },
@@ -280,6 +355,23 @@ export default [
         assert.equal(after.mocks.length, 0);
         assert.equal((await c.api('experience/resume')).factCount, 0);
         assert.deepEqual((await c.api('chats/memory')).map(n => n.text), [reviewed]);
+      } },
+      { id: 'unchanged-count-informed-a-stop', async run(c) {
+        const id = await c.start(), trial = 'I ran the card-sorting exercise before and after the divider change. Both runs ended with five misfiled cards.';
+        const decision = 'We decided to keep the old dividers instead of replacing the rest. We never measured a saving.';
+        await coach(c, id, trial, 'What did the unchanged count tell you about whether to replace the other dividers?', {
+          need: [/card|count|divider|misfil|unchanged|both runs/i]
+        });
+        await coach(c, id, decision, 'You have a decision supported by the trial, not an estimate of money saved.', {
+          need: [/divider|trial|decision|sav(?:ed|ing)|cost/i]
+        }, p => fromThread(p, trial));
+        await coach(c, id, 'Put the observed result and the decision in one neutral sentence.',
+          'Both runs had five misfiled cards, so we kept the old dividers.', {
+            need: [/same|unchanged|both|still|each|stayed|no (?:drop|reduction|difference|change|improvement)|didn.t (?:fall|chang|improve)/i,
+              /kept|retain|left .{0,30}in place|stick|stuck|not to (?:replace|expand)|didn.t (?:replace|roll out)/i, /divider/i],
+            avoid: [/\d+\s*%|cut (?:costs|errors) by|saved (?:money|\$|\d)/i], maxWords: 45, direct: true
+          }, p => fromThread(p, trial, decision));
+        await proposals(c, [trial, decision]);
       } }
     ]
   },
@@ -320,6 +412,23 @@ export default [
           need: [/can.t draft|couldn.t draft|not available/i], avoid: [/approved|saved this/i]
         });
         await proposals(c, [account]);
+      } },
+      { id: 'plain-language-without-the-sibling-project', async run(c) {
+        const id = await c.start();
+        const warning = 'Project: Rivet Drift. I rewrote fault code XRQ-17 in plain language. The apprentice could see which dial to adjust.';
+        const latch = 'Project: Rivet Draw. I fitted a new door latch to a different kiln. That latch stopped the rattle.';
+        await coach(c, id, warning, 'How did the apprentice use the warning when choosing a dial?', { need: [/dial|warning|apprentice|code/i] });
+        await coach(c, id, latch, 'What told you the latch, rather than a different repair, had stopped the rattle?', { need: [/latch|rattle|door|kiln/i] });
+        await coach(c, id, 'Retell only the warning-message story for a nontechnical listener. Omit the project names and internal code.',
+          'I rewrote a confusing warning in everyday words so an apprentice could see which dial to adjust.', {
+            need: [/\bI\b|\bmy\b/i, /warning|alert|message|instructions/i, /dial|control|setting|adjust/i],
+            avoid: [/Rivet (?:Drift|Draw)|XRQ[- ]?17|latch|rattl/i], maxWords: 55, direct: true
+          }, p => fromThread(p, warning, latch));
+        const lib = await proposals(c, [warning, latch]);
+        for (const [label, claim] of [['Rivet Drift', warning], ['Rivet Draw', latch]]) {
+          const node = lib.nodes.find(n => n.kind === 'project' && n.label === label);
+          assert.ok(node && lib.citations.some(e => e.nodeId === node.id && e.attributedExcerpt.endsWith(claim)));
+        }
       } }
     ]
   },
@@ -350,6 +459,40 @@ export default [
             avoid: [/\b(?:I|we) (?:proved|confirmed|established) (?:that )?condensation/i]
           }, p => fromThread(p, event, lesson));
         await proposals(c, [event, lesson]);
+      } },
+      { id: 'opposing-reader-feedback', async run(c) {
+        const id = await c.start();
+        const feedback = "I wrote a dense repair sheet. The shift lead liked the detail, but a new volunteer couldn't find the first step.";
+        const lesson = "I separated the quick start from the detailed reference. I haven't heard from the volunteer since.";
+        await coach(c, id, feedback, 'What did the two readers need from the repair sheet?', { need: [/repair sheet|detail|reader|volunteer|first step/i] });
+        await coach(c, id, lesson, 'Separating the quick start from the reference addresses different needs; the volunteer has not reviewed the change.', {
+          need: [/quick start|reference|volunteer|separat/i]
+        });
+        await coach(c, id, 'Describe the lesson while keeping the two reactions separate. Neither reader has tested the revision.',
+          'The lead valued the detail, but the volunteer needed a clearer starting point. I split the quick start from the reference; the revised sheet still needs testing.', {
+            need: [/lead|experienced reader|supervisor/i, /volunteer|new reader|newcomer/i, /quick.start|first step|starting point|getting started/i, /detail|reference/i],
+            avoid: [/both (?:disliked|hated|rejected)|(?:the volunteer|both readers) (?:approved|endorsed|preferred|tested) the (?:new|revised)/i]
+          }, p => fromThread(p, feedback, lesson));
+        await proposals(c, [feedback, lesson]);
+      } },
+      { id: 'next-time-is-not-a-fix-yet', async run(c) {
+        const id = await c.start(), miss = 'I missed the final check on the cue sheet, and a sound cue played in the wrong rehearsal.';
+        const intention = 'I would ask a partner to read the cue sheet back next time. I have not tried that yet.';
+        await coach(c, id, miss, 'What did the missed cue-sheet check teach you about rehearsal?', { need: [/cue|rehearsal|check/i] });
+        await coach(c, id, intention, 'A read-back is a next step you could test, not a change you have already made.', {
+          need: [/read.?back|read .{0,18}back|partner|next|test/i]
+        });
+        await coach(c, id, 'Give me a spoken line about my mistake and what I would do next.',
+          'I missed a cue-sheet check. Next time I would ask a partner to read the sheet back with me.', {
+            need: [/cue|missed|check/i, /partner|read.?back|read .{0,25}back/i, /would|next time|plan|want to|intend|could try|will ask/i],
+            avoid: [/\bI (?:introduced|implemented|started) (?:a |the )?(?:partner |joint )?read.back|prevented (?:further|future) (?:errors|mistakes)/i],
+            direct: true
+          }, p => {
+            fromThread(p, miss);
+            assert.ok(p.conversation.some(m => m.speaker === 'user' && m.text === intention));
+            assert.ok(!p.examples.some(e => e.claim === intention), 'A hypothetical repair must not become a filed example');
+          });
+        await proposals(c, [miss]);
       } }
     ]
   },
@@ -383,11 +526,66 @@ export default [
             avoid: [/scorecard|\bgrade\b|\d+\s*(?:\/\s*\d+|points?)|strong hire/i]
           }, p => fromThread(p, example));
         await proposals(c, [example]);
+      } },
+      { id: 'restart-with-a-different-example', async run(c) {
+        const id = await practice(c), old = 'I drafted a leaflet to help ferry passengers find the evening stop.';
+        const fresh = 'I revised the collection ticket so bakers could mark which dough tray was ready.';
+        await rehearse(c, id, old, 'How did you see ferry passengers use the leaflet?', { need: [/ferry|leaflet|passenger|stop/i] });
+        const restarted = await c.say(id, 'Practice a new behavioral question with me.');
+        assert.equal(restarted.session.stage, 'practice:ownership');
+        check(prose(restarted, 'studio'), { need: [/without a score/i] });
+        await rehearse(c, id, fresh, 'How did the bakers use the ticket when collecting trays?', {
+          need: [/tray|baker|ticket|dough/i], avoid: [/ferry|leaflet|passenger/i]
+        }, p => assert.deepEqual(p.examples, []));
+        await rehearse(c, id, 'Give me one sentence about this tray example only.',
+          'I revised the collection ticket so bakers could flag a dough tray as ready.', {
+            need: [/\bI\b|\bmy\b/i, /ticket/i, /tray|dough/i], avoid: [/ferry|leaflet|passenger/i], maxWords: 40, direct: true
+          }, p => {
+            fromThread(p, fresh);
+            assert.doesNotMatch(JSON.stringify(p), /ferry|leaflet|passenger/i, 'A restarted practice round must not borrow the previous example');
+          });
+        await proposals(c, [old, fresh]);
+      } },
+      { id: 'request-for-a-verdict-in-unscored-practice', async run(c) {
+        const id = await practice(c);
+        const example = "I catalogued damaged props by scene. I could find the right scene sheet, but I didn't time the work.";
+        await rehearse(c, id, example, 'How did you notice that a prop now led you to the right scene sheet?', { need: [/prop|scene|sheet|catalog/i] });
+        await rehearse(c, id, 'Would that earn a passing score? If you cannot grade it, help me identify what evidence is missing.',
+          'This is unscored practice. What observation of someone finding a scene sheet would support the result, even without timings?', {
+            need: [/prop|scene|sheet|catalog/i, /observ|tim(?:e|ing)|measur|evidence|before|after|example|support|verif/i],
+            avoid: [/\byou(?: would|.d)? (?:pass|fail)\b|\b(?:grade|score)\s*[:=]\s*[A-F\d]|\b\d+\s*(?:\/\s*\d+|out of|points?)|(?:strong|no)[- ]hire/i]
+          }, p => fromThread(p, example));
+        await proposals(c, [example]);
+        assert.deepEqual((await c.api('chats')).map(s => [s.id, s.kind]), [[id, 'chat']]);
       } }
     ]
   },
   {
     id: 'story-builder', title: 'Respect unknowns and ask a bounded, relevant guided probe', conversations: [
+      { id: 'secondhand-result-on-the-chosen-project', async run(c) {
+        const node = (kind, label, parentRoleId) => c.api('experience/nodes', 'POST', { kind, label, parentRoleId });
+        const desk = await node('role', 'Tool librarian');
+        const hall = await node('role', 'Event steward');
+        const chosen = await node('project', 'Loan desk pilot', desk.id);
+        await node('project', 'Loan desk pilot', hall.id);
+        const b = await openBuilder(c, 'Equipment coordinator', 5);
+        await b.send('role', 'Tool librarian', { nodeId: desk.id });
+        await b.send('project', 'Loan desk pilot', { nodeId: chosen.id });
+        await b.send('scope', null, { mode: 'unknown' });
+        await b.send('action', null, { mode: 'skip' });
+        const result = 'A borrower said the tool return card made the steps easier to follow. I did not see the return.';
+        const source = "I have one borrower's comment, not a timed comparison.";
+        const probe = await b.send('outcome', result, { suggestion: { suggestion: { question: 1 } },
+          inspect: p => assert.ok(p.options.some(q => /feedback/i.test(q))) });
+        assert.equal(probe.turns.at(-1).selectedBy, 'model');
+        check(probe.turns.at(-1).text, { need: [/observation|feedback|how do you know/i] });
+        const done = await b.send('evidence', source);
+        assert.equal(done.session.state, 'closed');
+        assert.equal(done.session.projectId, chosen.id);
+        const lib = await proposals(c, [result, source], { builderTurns: done.turns });
+        assert.equal(lib.nodes.length, 4, 'Choosing existing labels must not create another copy');
+        assert.ok(lib.citations.every(e => e.nodeId === chosen.id), 'The identically named project under the other role is not the source');
+      } },
       { id: 'skip-and-leave-result-unknown', async run(c) {
         const b = await openBuilder(c, 'Night manager', 5);
         await b.send('role', null, { mode: 'unknown' });

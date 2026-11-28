@@ -85,10 +85,20 @@ test('an HTTP fallback cannot hide wrong, missing, surplus or overlapping model 
   assert.deepEqual(codes(g), ['out-of-context-model-call']);
 });
 
+test('only live reports record an optional strict SHA-256 operator attestation', async () => {
+  const env = { INTERVIEW_PREP_MODEL_ID: 'test', INTERVIEW_PREP_MODEL_PORT: '4321' }, revision = 'ab'.repeat(32);
+  const withRevision = value => ({ ...env, INTERVIEW_PREP_EVAL_MODEL_REVISION: value });
+  assert.ok(!Object.hasOwn((await modelAdapter('live', env)).model, 'revision'));
+  assert.equal((await modelAdapter('live', withRevision(revision))).model.revision, revision);
+  for (const bad of ['', revision.toUpperCase(), revision.slice(1), revision + '0', revision + '\n', 'private-value', null])
+    await assert.rejects(modelAdapter('live', withRevision(bad)), { message: 'invalid-model-revision' });
+  assert.ok(!Object.hasOwn((await modelAdapter('replay', withRevision('unused'))).model, 'revision'));
+});
+
 test('live forwards only inspected calls to the fixed local route; redirects, unusable completions and key leaks fail closed', async t => {
   const dir = join(root, 'evals', 'obj');
   await mkdir(dir, { recursive: true });
-  const keyFile = join(dir, `${randomUUID()}.key`), key = `synthetic-key-${randomUUID()}`;
+  const keyFile = join(dir, `${randomUUID()}.key`), key = randomUUID().replaceAll('-', '').repeat(2);
   await writeFile(keyFile, key, { flag: 'wx', mode: 0o600 }); t.after(() => rm(keyFile));
   const received = []; let trapHits = 0, behavior = 'valid';
   const trap = await listener(t, (_req, res) => { trapHits++; res.end(); });
@@ -100,7 +110,9 @@ test('live forwards only inspected calls to the fixed local route; redirects, un
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content } }], model: 'loopback-test' }));
   });
-  const env = { INTERVIEW_PREP_MODEL_PORT: String(port), INTERVIEW_PREP_MODEL_ID: 'loopback-test', INTERVIEW_PREP_MODEL_KEY_FILE: keyFile };
+  const env = { INTERVIEW_PREP_MODEL_PORT: String(port), INTERVIEW_PREP_MODEL_ID: 'loopback-test', INTERVIEW_PREP_MODEL_KEY_FILE: keyFile,
+    INTERVIEW_PREP_EVAL_MODEL_REVISION: 'ab'.repeat(32) };
+  await assert.rejects(modelAdapter('live', { ...env, INTERVIEW_PREP_EVAL_MODEL_REVISION: key }), { message: 'invalid-model-revision' });
   for (const value of ['https://example.invalid', '127.0.0.1:8080', '0', '65536', '1#@example.invalid'])
     await assert.rejects(modelAdapter('live', { ...env, INTERVIEW_PREP_MODEL_PORT: value }), /local-model-port/);
   await assert.rejects(modelAdapter('live', {}), /local-model-port/);
@@ -228,4 +240,35 @@ test('comparison flags a newly failing ID even if the net pass count is unchange
     x => x.cases.pop(), x => x.cases.push(x.cases[0]), x => x.cases[0].calls[0].settings = otherHash,
     x => x.cases[0].calls[0].outcome = 'replayed', x => x.cases[0].calls = [], x => x.failures.push({ code: 'setup-failed' })])
     different(mutation);
+});
+
+test('comparison distinguishes matching live revision attestations, unknown revisions and replay', () => {
+  const b = exampleReport(), c = structuredClone(b);
+  assert.equal(compare(b, c).modelRevisionStatus, 'unknown');
+  b.model.revision = hash;
+  assert.throws(() => compare(b, c), { message: 'different-model-revision' });
+  assert.throws(() => compare(c, b), { message: 'different-model-revision' });
+  c.model.revision = otherHash;
+  assert.throws(() => compare(b, c), { message: 'different-model-revision' });
+  c.model.revision = hash;
+  assert.equal(compare(b, c).modelRevisionStatus, 'operator-attested-match');
+  for (const bad of ['', null, undefined, [hash], { sha256: hash }, 42, hash + '\n', 'F'.repeat(64)]) {
+    b.model.revision = c.model.revision = bad;
+    assert.throws(() => compare(b, c), { message: 'invalid-report-model-revision' });
+  }
+  const replay = exampleReport();
+  replay.lane = 'replay'; replay.model = { provider: 'replay-fixture', id: 'replay' };
+  replay.cases[0].calls[0].outcome = 'replayed';
+  assert.equal(compare(replay, replay).modelRevisionStatus, 'not-applicable');
+  replay.model.revision = hash;
+  assert.throws(() => compare(replay, replay), { message: 'invalid-report-model-revision' });
+});
+
+test('a rules-only pass cannot improve on a failure that exercised the model', () => {
+  const b = exampleReport(), c = structuredClone(b);
+  Object.assign(b.cases[0], { status: 'failed', failures: [{ code: 'case-assertion' }] });
+  Object.assign(c.cases[0], { exercise: 'rules-only', calls: [] });
+  const result = compare(b, c);
+  assert.deepEqual(result.regressions, [{ id: 'scenario/quality', reason: 'lost-model-coverage' }]);
+  assert.deepEqual(result.improvements, []);
 });

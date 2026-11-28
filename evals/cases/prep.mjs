@@ -104,6 +104,10 @@ async function existingBlock(c, startsAt) {
   assert.deepEqual(plan.blocks.map(b => Date.parse(b.startsAt)), [Date.parse(startsAt)]);
   return { id, plan };
 }
+async function confirmedFact(c, project, claim, allowDrafts = false) {
+  const { id } = await c.api('evidence', 'POST', { project, statement: claim });
+  await c.api(`evidence/${id}/confirm`, 'POST', { claim, allowDrafts });
+}
 function modelQuestion(detail, spec, subject, forbidden) {
   // The rest of the packet (including its stock questions and times) is application-authored.
   const questions = [...reply(detail).matchAll(questionLabel)].map(m => m[1]);
@@ -185,6 +189,38 @@ export default [
       stage(await c.say(id, wall(future(-2))), 'plan:date', /future/i);
       stage(await c.say(id, 'never mind'), 'open', /planning stopped/i);
       await emptySchedule(c);
+    }),
+    { id: 'unreadable-link-to-permitted-summary', run: async c => {
+      const id = await c.start('plan');
+      const spec = { company: 'Twine Exchange', role: 'Intake coordinator',
+        description: 'Sort reclaimed textiles for reuse when fiber labels are missing. Set aside unidentified blends rather than invent a grade.' };
+      stage(await c.say(id, spec.company), 'plan:role');
+      stage(await c.say(id, spec.role), 'plan:description', /public HTTPS job link/i);
+      stage(await c.say(id, 'https://folio.example.invalid/jobs/digital-curator'), 'plan:description', /couldn.t read.*permitted job description/i);
+      await emptySchedule(c);
+      stage(await c.say(id, spec.description), 'plan:date', /when/i);
+      stage(await c.say(id, wall(future(11))), 'plan:research');
+      const detail = await save(c, id, spec, 'no', { question: 'How did you decide which unlabeled textiles could be reused on a past project?' });
+      modelQuestion(detail, spec, /fabric|textile|fib(?:er|re)|blend|label|reclaim|reuse|grad(?:e|ing)|material/i, /folio|digital curat|web page|Twine Exchange/i);
+      const target = await targetFor(c, detail);
+      assert.equal(target.description, spec.description);
+      assert.equal(target.jobUrl, null);
+      assert.deepEqual(target.sources, [], 'an unreadable URL is not a source for the role');
+      await unbooked(c, target.id);
+    } },
+    workflow('two-invitations-one-unfinished-draft', async c => {
+      const provisional = { company: 'Willow Registry', role: 'Records assistant', description: 'Prepare accession cards.' };
+      const first = await toDate(c, provisional), date = future(8).slice(0, 10);
+      stage(await c.say(first, date), 'plan:date', /what time/i);
+      const ready = { company: 'Willow Dispatch', role: 'Dispatch supervisor', description: 'Coordinate night shifts.' };
+      const second = await toResearch(c, ready), detail = await save(c, second, ready, 'no'), target = await targetFor(c, detail);
+      assert.deepEqual([target.company, target.role, target.description], [ready.company, ready.role, ready.description]);
+      const reminder = stage(await c.say(first, '09:15'), 'plan:research');
+      assert.ok(reminder.includes(provisional.company) && reminder.includes(provisional.role) && reminder.includes(`${date} 09:15`));
+      assert.doesNotMatch(reminder, /Willow Dispatch|Dispatch supervisor/i);
+      stage(await c.say(first, 'cancel'), 'open', /planning stopped/i);
+      assert.deepEqual(await targets(c), [target]);
+      await unbooked(c, target.id);
     })
   ] },
   { id: 'prep-zone', title: 'Change local zones and resolve clock changes explicitly', conversations: [
@@ -213,6 +249,34 @@ export default [
       assert.equal(target.interviewZone, spec.zone);
       assert.equal(Date.parse(target.interviewAt), Date.parse(`${fall}T07:15Z`));
       await unbooked(c, target.id);
+    }),
+    workflow('unknown-browser-zone-utc-invitation', async c => {
+      const spec = { role: 'Print-room technician' }, id = await c.start('plan'), zone = 'Asia/Kathmandu';
+      stage(await c.say(id, 'skip'), 'plan:role');
+      stage(await c.say(id, spec.role), 'plan:description');
+      stage(await c.say(id, 'skip', { zone: 'Studio/Unknown' }), 'plan:zone', /which timezone/i);
+      stage(await c.say(id, 'the time at the venue'), 'plan:zone', /don.t recognize/i);
+      stage(await c.say(id, zone), 'plan:date', /Asia\/Kathmandu/);
+      const invitation = future(6, 22, 45);
+      const summary = stage(await c.say(id, invitation), 'plan:research', /04:30 \(UTC\+05:45\)/);
+      assert.ok(summary.includes(localDay(invitation, zone)) && !summary.includes(invitation.slice(0, 10)));
+      const detail = await save(c, id, spec, 'yes'), target = await targetFor(c, detail);
+      assert.equal(target.interviewZone, zone);
+      assert.equal(Date.parse(target.interviewAt), Date.parse(invitation), 'preserve the UTC instant across the local date boundary');
+      await unbooked(c, target.id);
+    }),
+    workflow('same-evening-hour-across-clock-change', async c => {
+      const sunday = Date.parse(`${nextSunday(3, 2)}T00:00Z`);
+      const date = offset => new Date(sunday + offset * day).toISOString().slice(0, 10);
+      const spec = { role: 'Lighting scheduler', zone: 'America/Los_Angeles', when: `${date(3)} 09:00` };
+      const id = await toResearch(c, spec), initial = await save(c, id, spec, 'yes'), target = await targetFor(c, initial);
+      stage(await c.say(id, 'change'), 'plan:times', /America\/Los_Angeles/);
+      const revised = await c.say(id, `${date(-1)} 18:20; ${date(1)} 18:20`);
+      const starts = preview(revised, target.interviewAt);
+      assert.deepEqual(starts, [Date.parse(`${date(-1)}T18:20-08:00`), Date.parse(`${date(1)}T18:20-07:00`)]);
+      await unbooked(c, target.id);
+      stage(await c.say(id, 'confirm', { zone: 'UTC' }), 'open', /saved.*mock/i);
+      await booked(c, target, starts);
     })
   ] },
   { id: 'prep-consent', title: 'Keep permission to research separate from permission to book', conversations: [
@@ -247,6 +311,30 @@ export default [
       stage(await c.say(id, 'confirm'), 'open', /saved.*mock/i);
       await booked(c, target, starts);
       assert.deepEqual(await targets(c), [target]);
+    }),
+    workflow('decline-saving-unnamed-target', async c => {
+      const id = await toResearch(c, { role: 'Mobile library assistant', description: 'Coordinate pop-up reading rooms.' });
+      const ask = reply(await c.api(`chats/${id}`));
+      assert.match(ask, /save this target.*without a company lookup/i);
+      stage(await c.say(id, 'Could we leave it off the calendar?'), 'plan:research', /save.*or.*cancel/i);
+      await emptySchedule(c);
+      stage(await c.say(id, 'no'), 'open', /no target or blocks were saved/i);
+      await emptySchedule(c);
+      await noSearch(c);
+    }),
+    workflow('research-does-not-grant-story-reuse', async c => {
+      const allowed = 'Copper shift cards', withheld = 'Sealed Spur Report';
+      await confirmedFact(c, allowed, 'I compared inspection reminders at the loading bay.', true);
+      await confirmedFact(c, withheld, 'I reviewed the confidential spur inspection log.');
+      const before = (await c.state()).facts;
+      const spec = { company: 'Juniper Switch Shed', role: 'Depot inspection coordinator', description: 'Identify repeat inspections and missing handoffs.' };
+      const id = await toResearch(c, spec), detail = await save(c, id, spec, 'yes'), target = await targetFor(c, detail);
+      const text = stage(detail, 'plan:confirm', /no live lookup/i, /confirmed, draft-enabled/i);
+      assert.ok(text.includes(allowed) && !text.includes(withheld));
+      assert.ok(before.every(f => !text.includes(f.claim)), 'story guidance links permitted labels rather than reproducing private claims');
+      assert.deepEqual((await c.state()).facts, before);
+      assert.deepEqual(target.sources, []);
+      await unbooked(c, target.id);
     })
   ] },
   { id: 'prep-question', title: 'An original model-authored rehearsal question grounded only in the job', conversations: [
@@ -283,6 +371,19 @@ export default [
       const text = stage(detail, 'plan:confirm', /practice question/i, /nothing booked/i);
       assert.doesNotMatch(text, /coach rehearsal question|booked a secret|which route/i);
       await unbooked(c, (await targetFor(c, detail)).id);
+    } },
+    { id: 'qualitative-outcome-without-borrowed-metric', run: async c => {
+      await confirmedFact(c, 'Ticket desk audit', 'I increased paid admissions by 48 percent.');
+      const spec = { role: 'Volunteer handoff facilitator',
+        description: 'Coordinate shift handoffs at a community garden. Learn what worked from volunteer debriefs; the garden does not track attendance or revenue.' };
+      const id = await toResearch(c, spec);
+      const detail = await save(c, id, spec, 'yes', { question: 'What did you learn from volunteer debriefs that changed a shift handoff?' });
+      modelQuestion(detail, spec, /handoff|hand.?over|volunteer|garden|debrief|shift (?:change|transition)/i,
+        /ticket desk|paid admissions|48\s*(?:percent|%)|how (?:much|many).*(?:revenue|attendance)|(?:revenue|attendance) (?:grew|increased) by/i);
+      const target = await targetFor(c, detail);
+      stage(await c.say(id, 'no'), 'open', /unbooked/i);
+      await unbooked(c, target.id);
+      assert.equal((await c.state()).facts.length, 1);
     } }
   ] },
   { id: 'prep-preview', title: 'Preview feasible blocks and change times without reserving them', conversations: [
@@ -313,6 +414,29 @@ export default [
       assert.match(reply(revised), /08:15 \(UTC\+05:30\)/);
       assert.deepEqual(preview(revised, target.interviewAt), [Date.parse(`${date}T02:45Z`)]);
       await unbooked(c, target.id);
+    }),
+    workflow('two-breaks-ending-at-the-deadline', async c => {
+      const deadline = future(5, 11), spec = { role: 'Studio floor assistant', when: wall(deadline) };
+      const id = await toResearch(c, spec), packet = await save(c, id, spec, 'yes'), target = await targetFor(c, packet);
+      stage(await c.say(id, 'change'), 'plan:times');
+      const before = minutes => new Date(Date.parse(deadline) - minutes * minute).toISOString();
+      stage(await c.say(id, wall(before(24))), 'plan:times', /finish before the interview/i);
+      await unbooked(c, target.id);
+      const exact = await c.say(id, `${wall(before(50))}; ${wall(before(25))}`);
+      assert.deepEqual(preview(exact, target.interviewAt), [Date.parse(before(50)), Date.parse(before(25))]);
+      await unbooked(c, target.id);
+    }),
+    workflow('other-calendar-does-not-take-my-slot', async c => {
+      const slot = future(2, 12, 35), peer = await c.peer(), outside = await existingBlock(peer, slot);
+      const spec = { role: 'Lunch service lead' }, id = await toResearch(c, spec);
+      const first = await save(c, id, spec, 'yes'), target = await targetFor(c, first);
+      stage(await c.say(id, 'change'), 'plan:times');
+      const preferred = await c.say(id, wall(slot));
+      assert.deepEqual(preview(preferred, target.interviewAt), [Date.parse(slot)]);
+      assert.doesNotMatch(reply(preferred), /Harbor archive assistant/i);
+      await unbooked(c, target.id);
+      assert.equal((await c.api('today')).next, null);
+      assert.deepEqual((await progress(peer, outside.id)).plan, outside.plan);
     })
   ] },
   { id: 'prep-book', title: 'Confirm exactly once, decline, or cancel the pending draft', conversations: [
@@ -353,6 +477,21 @@ export default [
       stage(await c.say(id, 'decline'), 'open', /unbooked/i);
       await unbooked(c, target.id);
       assert.deepEqual((await progress(c, other.id)).plan, other.plan);
+    }),
+    workflow('schedule-tab-wins-over-stale-chat', async c => {
+      const spec = { role: 'Maintenance estimator' }, id = await toResearch(c, spec);
+      const detail = await save(c, id, spec, 'yes'), target = await targetFor(c, detail);
+      const original = preview(detail, target.interviewAt);
+      await unbooked(c, target.id);
+      const slot = future(3, 7, 45);
+      assert.ok(!original.includes(Date.parse(slot)));
+      await c.api(`targets/${target.id}/schedule/confirm`, 'POST', {
+        interviewAt: target.interviewAt, zone: target.interviewZone,
+        windows: [{ start: slot, end: new Date(Date.parse(slot) + 25 * minute).toISOString() }]
+      });
+      const saved = await booked(c, target, [Date.parse(slot)]);
+      stage(await c.say(id, 'confirm'), 'open', /already has a plan/i, /untouched/i);
+      assert.deepEqual((await progress(c, target.id)).plan, saved, 'stale consent cannot replace an independently saved schedule');
     })
   ] },
   { id: 'prep-capacity', title: 'Handle too little time and recheck availability at booking', conversations: [
@@ -385,6 +524,40 @@ export default [
       stage(await c.say(id, 'confirm'), 'open', /saved 1 mock block/i);
       await booked(c, target, starts);
       assert.deepEqual((await progress(c, occupied.id)).plan, occupied.plan);
+    }),
+    workflow('fragmented-breaks-fit-a-drill-not-a-mock', async c => {
+      const spec = { role: 'Community room host' }, id = await toResearch(c, spec);
+      const packet = await save(c, id, spec, 'yes'), target = await targetFor(c, packet);
+      preview(packet, target.interviewAt);
+      stage(await c.say(id, 'I only have two short breaks on separate days.'), 'plan:confirm', /nothing booked/i);
+      stage(await c.say(id, 'no thanks'), 'open', /unbooked/i);
+      const windows = [future(2, 11), future(4, 17)].map(start =>
+        ({ start, end: new Date(Date.parse(start) + 14 * minute).toISOString() }));
+      const { blocks } = await c.api(`targets/${target.id}/schedule/preview`, 'POST', {
+        interviewAt: target.interviewAt, zone: target.interviewZone, windows
+      });
+      assert.ok(blocks.length > 0 && blocks.every(b => b.kind === 'drill'), 'do not concatenate disconnected availability into a mock');
+      for (const b of blocks) {
+        const start = Date.parse(b.startsAt);
+        assert.ok(b.minutes > 0 && windows.some(w => start >= Date.parse(w.start) && start + b.minutes * minute <= Date.parse(w.end)));
+      }
+      await unbooked(c, target.id);
+    }),
+    workflow('skipped-block-releases-its-window', async c => {
+      const slot = future(4, 16, 10), occupied = await existingBlock(c, slot);
+      const spec = { role: 'Map proofreader' }, id = await toResearch(c, spec);
+      const first = await save(c, id, spec, 'yes'), target = await targetFor(c, first);
+      stage(await c.say(id, 'change'), 'plan:times');
+      stage(await c.say(id, wall(slot)), 'plan:times', /unused.*slots/i);
+      await unbooked(c, target.id);
+      const prior = occupied.plan.blocks[0];
+      await c.api(`blocks/${prior.id}`, 'POST', { action: 'skip' });
+      const available = await c.say(id, wall(slot)), starts = preview(available, target.interviewAt);
+      assert.deepEqual(starts, [Date.parse(slot)]);
+      await unbooked(c, target.id);
+      stage(await c.say(id, 'confirm'), 'open', /saved 1 mock block/i);
+      await booked(c, target, starts);
+      assert.deepEqual((await progress(c, occupied.id)).plan.blocks, [{ ...prior, state: 'skipped' }]);
     })
   ] },
   { id: 'prep-discovery', title: 'Private matching, public-title-only search, and separate daily opt-in', conversations: [
@@ -421,6 +594,45 @@ export default [
       await c.api('account/daily-search', 'PUT', { enabled: false });
       assert.deepEqual(await daily(c), { enabled: false, role: publicRole });
       await unbooked(c, target.id);
+    }),
+    { id: 'use-private-match-decline-public-scout', run: async c => {
+      const project = 'Brass drift ledger', claim = 'I reconciled thermal sensor drift logs against weekly bench readings.';
+      await confirmedFact(c, project, claim);
+      const before = (await c.state()).facts, id = await c.start();
+      const requirement = 'Reconcile thermal sensor drift logs.', posting = `Compare this posting to my experience:\n- ${requirement}`;
+      c.expect('posting.match', { matches: [{ requirement: 1, evidence: 1 }] }, p => {
+        assert.equal(p.posting, posting);
+        assert.deepEqual(p.requirements, [{ number: 1, text: requirement, options: [1] }]);
+        assert.deepEqual(p.evidence.map(h => [h.number, h.kind, h.text]), [[1, 'confirmed fact', claim]]);
+      });
+      const comparison = await c.say(id, posting), text = reply(comparison);
+      assert.equal(comparison.messages.at(-1).mode, 'local model');
+      assert.match(text, /private posting comparison/i);
+      assert.ok(text.includes(project) && text.includes(claim), 'the candidate sees the selected private example');
+      await noSearch(c);
+      const ask = stage(await c.say(id, 'Find jobs'), 'search:role', /public job title/i);
+      offlineDisclosure(ask);
+      assert.ok(!ask.includes(project) && !ask.includes(claim));
+      stage(await c.say(id, 'cancel'), 'open', /no search was run/i);
+      await noSearch(c);
+      assert.deepEqual((await c.state()).facts, before);
+    } },
+    workflow('different-title-cannot-relabel-daily-report', async c => {
+      const id = await c.start('scout'), now = Date.now();
+      const zone = ['UTC', 'Asia/Tokyo'].find(z => localDay(now, z) === localDay(now + 2 * 60 * minute, z));
+      offlineDisclosure(reply(await c.api(`chats/${id}`)));
+      const report = await c.say(id, publicRole, { zone }), original = await recordedReport(c, report);
+      stage(await c.say(id, 'yes', { zone }), 'open', /daily search is on/i);
+      assert.deepEqual(await daily(c), { enabled: true, role: publicRole });
+      const offer = stage(await c.say(id, 'Find other roles', { zone }), 'search:role', /Systems Engineer/i);
+      offlineDisclosure(offer);
+      const unchanged = stage(await c.say(id, 'Paper conservator', { zone }), 'open', /report for a different role/i, /no additional search/i);
+      assert.doesNotMatch(unchanged, /Telemetry|unverified public citation/i);
+      const { digests } = await discovery(c);
+      assert.deepEqual(digests.map(d => [d.id, d.targetRole]), [[original.id, publicRole]]);
+      assert.deepEqual(digests[0].webSearch.links.map(l => l.url), [recordedUrl]);
+      assert.deepEqual(await daily(c), { enabled: true, role: publicRole });
+      await c.api('account/daily-search', 'PUT', { enabled: false });
     })
   ] }
 ];

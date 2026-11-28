@@ -15,14 +15,19 @@ For machine-readable evidence, after the Release build:
 
 ```powershell
 node .\evals\run.mjs --lane replay --report "$env:TEMP\coach-replay.json"
+# After connecting the bundled model, pin the installed weights for both live runs.
+$weights = Join-Path $env:LOCALAPPDATA 'InterviewPrep\inference\qwen2.5-1.5b-instruct-q4_k_m.gguf'
+$env:INTERVIEW_PREP_EVAL_MODEL_REVISION = (Get-FileHash -Algorithm SHA256 -LiteralPath $weights).Hash.ToLowerInvariant()
 node .\evals\run.mjs --lane live --store $baselineStore --report "$env:TEMP\coach-baseline.json"
 node .\evals\run.mjs --lane live --store $candidateStore --report "$env:TEMP\coach-candidate.json"
 node .\evals\compare.mjs "$env:TEMP\coach-baseline.json" "$env:TEMP\coach-candidate.json"
 ```
 
-Use the **same** corpus, API binary, case selection, provider/model build and decoding settings for baseline and candidate. Pin a different read-only scratch store for each (below); don't run the comparison against a moving serving pointer. Keep reports with the code SHA and exact model build/weight or deployment revision. A model name alone doesn't identify changed weights behind an alias. An author's model or context tier is not the model under test. Both eval lanes use recorded job-search results and set `INTERVIEW_PREP_RESEARCH_OFFLINE=1` to deny company and job-page requests before DNS. Public search provider protocol is covered separately by `ScoutWebSearchChecks`, not measured as a live search-quality win.
+Use the **same** corpus, API binary, case selection, provider/model build and decoding settings for baseline and candidate. Pin a different read-only scratch store for each (below); don't run the comparison against a moving serving pointer. For another loopback model, set `INTERVIEW_PREP_EVAL_MODEL_REVISION` to a lowercase SHA-256 for the loaded weights or immutable deployment revision and retain the runtime build ID alongside the reports. This is the operator's attestation, not a proof provided by the server. An unpinned comparison is exploratory: an alias can change behind the same port. An author's model or context tier is not the model under test. Both eval lanes use recorded job-search results and set `INTERVIEW_PREP_RESEARCH_OFFLINE=1` to deny company and job-page requests before DNS. Public search provider protocol is covered separately by `ScoutWebSearchChecks`, not measured as a live search-quality win.
 
-**Review what an assertion can't measure.** Reserve fresh synthetic examples outside the prompt-tuning loop. For each of the five families, give two reviewers the same input/source material and outputs A/B in randomized order, without pack names. Each independently marks **0** (wrong/unsupported), **1** (safe but generic or incomplete) or **2** (specific and useful) on the following axes. Record opaque case ID, axis, marks, rationale and adjudication in a private release receipt; do not copy private candidate conversations.
+**Read `stillFailing`, not just `regressions`.** In a two-conversation calibration of `1.0.0` versus `1.0.1` on the bundled Qwen2.5-1.5B model, the baseline passed neither case. The candidate filed the held role and both cited projects in `import-resume/two-work-orders`. It returned an accepted, cited scorecard for `mock-strong/shadow-ledger`, but at least one mark was outside its reference band. The comparator correctly reported *no new failures* and *one still failing*. This small run did not clear the candidate for promotion; an earlier provider timeout is not evidence that wording alone improved quality.
+
+**Review what an assertion can't measure.** Reserve fresh synthetic examples outside the prompt-tuning loop. The automated reports deliberately omit transcripts. For each family, a coordinator runs the same held-out journey in two disposable workspaces on the pinned packs, captures the user-visible replies, and randomizes A/B per case. Give two reviewers the fictional source material and both replies, not the pack names or assignment key. Each independently marks **0** (wrong/unsupported), **1** (safe but generic or incomplete) or **2** (specific and useful) on the following axes. Record opaque case ID, axis, marks, rationale and adjudication in a private release receipt; do not copy private candidate conversations.
 
 | Family | What separates 2 from 1 | Hard fail regardless of style |
 | --- | --- | --- |

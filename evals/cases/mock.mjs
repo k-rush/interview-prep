@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { check } from '../gateway.mjs';
 
 const rubric = [
   { name: 'Ownership', anchor: "Distinguishes an individual action from the team's work." },
@@ -89,7 +90,8 @@ async function checkReport(c, r, m, asked, checks = [true]) {
     assert.ok(mark.quote.trim() && mark.quote.length <= 320 && answer.includes(mark.quote), `Quote must be verbatim in answer ${i + 1}`);
     assert.ok(mark.feedback.trim() && mark.feedback.length <= 600);
     if (!model) continue;
-    assert.ok(mark.points >= min && mark.points <= max, `${rubric[i].name}: ${mark.points} outside [${min},${max}]`);
+    check(mark.points >= min && mark.points <= max,
+      `mock-${rubric[i].name.toLowerCase()}-points-${mark.points}-outside-${min}-${max}`);
     assert.ok((mark.quote.match(/[\p{L}\d'-]+/gu) ?? []).length >= 2, 'Quote a meaningful excerpt, not punctuation or a common word');
     if (r.quoteTests?.[i]) assert.match(mark.quote, r.quoteTests[i], 'Cite evidence relevant to this anchor');
     assert.doesNotMatch(mark.feedback, verdictPrediction);
@@ -249,6 +251,36 @@ const target = { id: 'mock-target', title: 'Start a role-tailored four-competenc
     roleTerms: /exhibit|collection|registrar|loan|condition|artifact|artwork|museum|object|catalog|handoff/i,
     forbidden: ['BADGE-ALWAYS', 'date of birth'],
   })),
+  written('title-only-audio', round('Audio post-production assistant', [
+    ['My work was at a school radio club. I indexed takes and marked room tone; the editor chose the final cut.', meets],
+    ['I chose a listening pass over sorting by filename because two recorders had reused the same filenames.', meets],
+    ['When the editor opened my index I watched her find the clean take without replaying the noisy ones. I did not time the edit.', meets],
+    ['A pair of recordings shared one name. I listened and labeled each take so the editor could pick the clean one.', supported],
+  ], {
+    plan: [
+      'Which part of an audio project did you personally handle?',
+      'How did you choose between approaches when preparing audio material?',
+      'What evidence told you whether your work on the recording helped?',
+      'How would you explain an editing handoff to someone unfamiliar with audio production?',
+    ],
+    roleTerms: /audio|sound|record|mixing|edit|production|track|session|listening/i,
+    rejectProbes: /(?:required|standard|mandatory) at (?:our|your) studio|your (?:paid|commercial) studio (?:job|clients)|which (?:major )?label hired you/i,
+  })),
+  written('adjacent-desk-not-moderation', round('Community program coordinator. Schedule volunteers and neighborhood events. Content moderation and account bans belong to a separate operations desk.', [
+    ['I scheduled hosts for our repair evening. The front-desk team handled signups and visitor questions.', meets],
+    ['I staggered host arrivals instead of asking everyone to open the hall; only one member held a key.', meets],
+    ['I checked the door sheet at closing. Every visitor had a named host, though a few still waited for a specialist.', meets],
+    ['Visitors had arrived before anyone could open up. I staggered the host rota around the keyholder so newcomers could check in.', supported],
+  ], {
+    plan: [
+      'What part of a volunteer event did you personally coordinate?',
+      'Which options did you consider when arranging event coverage?',
+      'What did you observe about visitor coverage under that event schedule?',
+      'How would you explain a scheduling change to a volunteer who had just joined?',
+    ],
+    roleTerms: /communit|host|volunteer|event|schedul|rot[ae]|neighbou?rhood|coordinat/i,
+    rejectProbes: /(?:you (?:banned|moderated)|your (?:ban|moderation) decision|how .*you (?:enforce|remove) (?:a |the )?(?:content|account))/i,
+  })),
 ] };
 
 const adapt = { id: 'mock-adapt', title: 'Ask neutral adaptive probes, not coaching hints', conversations: [
@@ -272,6 +304,26 @@ const adapt = { id: 'mock-adapt', title: 'Ask neutral adaptive probes, not coach
     ['What did you observe when people used the raised notch?', /notch|touch|tactile|color|colour|glove|light|edge|visibility/i],
     ['How would you describe the walk-through with the stop cards to a new trainer?', /walk.?through|trainee|trainer|stop|card|point|assist/i],
   ] })),
+  interviewed('budget-stop-not-a-launch', round('Street furniture coordinator testing wayfinding signs', [
+    ['I laid out a cardboard sign at eye level. The route planners chose its location; installation was never approved.', meets],
+    ['I tested the cardboard version rather than ordering metal because funding stopped before installation.', meets],
+    ['At the tabletop test I watched walkers point to the wrong exit. We did not test on the street.', meets],
+    ['The exit arrows confused volunteers even on the tabletop. I tested a cardboard sign and reported the confusion before anyone ordered metal.', supported],
+  ], { rejectProbes: /after (?:you |the team )?(?:installed|launched|rolled out)|since (?:the|your) (?:rollout|installation)|after the (?:street|citywide) (?:launch|rollout|installation)/i, probes: [
+    ['Which alternatives did you consider for testing the cardboard sign?', /cardboard|sign|route|layout|prototype|installation/i],
+    ['What did you observe in the cardboard test before funding stopped?', /cardboard|metal|fund|test|install/i],
+    ['How would you explain what the tabletop test showed someone unfamiliar with the route?', /tabletop|walker|wrong|exit|street|test/i],
+  ] })),
+  interviewed('canal-not-archive', round('Records assistant handing off conservation work', [
+    ['I cannot recall who did what on the vault move.', none],
+    ['A different example: I chose waterproof sleeves over a cabinet for canal maps because staff carried the sheets down to the dock.', meets],
+    ['After a wet shift I opened the sleeves with the duty lead. The maps were dry but the paper labels had smeared.', meets],
+    ['The vault move is not my example. I put our canal maps in sleeves so staff could carry them outside. The sheets stayed dry; the labels still needed work.', supported],
+  ], { rejectProbes: /you (?:led|owned|managed) the vault move|since you (?:led|owned) the move/i, probes: [
+    ['Which records decision can you describe from an example you remember better?', /vault|move|recall|remember|records/i],
+    ['What did you observe when staff carried the sleeved maps to the dock?', /sleeve|map|canal|dock|cabinet|waterproof/i],
+    ['How would you explain the dry maps and smeared labels to the next duty lead?', /dry|wet|map|label|smear|sleeve/i],
+  ] })),
 ] };
 
 const strong = { id: 'mock-strong', title: 'Grade a complete, well-supported transcript', conversations: [
@@ -287,6 +339,18 @@ const strong = { id: 'mock-strong', title: 'Grade a complete, well-supported tra
     ['I watched the next walk-ins select the right form without pointing to the desk worker. Earlier, the same step had required a demonstration. I never counted visitors.', meets],
     ['Neighbors were getting stuck before they could ask for help. I put pictures beside the forms. During my next desk shift people could choose a form on their own.', supported],
   ], { sum: [12, 16], quoteTests: { 2: /watched|select the right form|without pointing|required a demonstration/i } })),
+  written('stop-a-failing-trial', round('Scheduling analyst piloting a new bus connection', [
+    ['I defined the connection test and the stop rule. Dispatch assigned the drivers and kept the published timetable.', meets],
+    ['I chose a one-route trial rather than a network change because missed connections elsewhere would be hard to undo.', meets],
+    ['I matched actual arrival slips to the departing bus on trial days. The connection failed more often than on the old schedule, so I stopped the trial.', rich],
+    ['We tried to shorten a transfer. I checked the buses that really met and found more passengers would miss the connection, so we kept the old timetable.', meets],
+  ], { sum: [12, 16], quoteTests: { 2: /matched|arrival slips|departing bus|trial days|failed more often|old schedule|stopped the trial/i } })),
+  written('quiet-survey-no-attribution', round('Civic program evaluator testing evening drop-ins', [
+    ['I designed the entry tally and compared evening attendance. The coordinators recruited volunteers and picked the venue.', meets],
+    ['I used a door tally rather than a follow-up survey because we could not ask visitors for contact details. I lost the chance to track repeat visits.', meets],
+    ['On the same weekdays I compared the evening tally with the old sign-in sheet: attendance rose from six to ten. A weather closure also ended, so I cannot attribute the increase to the hours.', rich],
+    ['We wanted to know who came after work. I compared the counts across matching evenings. More visitors came, but the end of a closure meant I could not say the hours caused it.', meets],
+  ], { sum: [12, 16], quoteTests: { 2: /weekdays|compared|tally|sign-in|attendance|six to ten|weather closure|cannot attribute/i } })),
 ] };
 
 const thin = { id: 'mock-thin', title: 'Separate unsupported claims from observable qualitative impact', conversations: [
@@ -302,6 +366,18 @@ const thin = { id: 'mock-thin', title: 'Separate unsupported claims from observa
     ['During a desk shift I watched readers follow the new picture card to the return slot. Before the card they had come back to ask where the slot was. There is no tally.', meets],
     ['The card is in the guide now. That is what changed.', partial],
   ], { sum: [4, 10], quoteTests: { 2: /watched|follow the new picture card|return slot|come back to ask/i } })),
+  written('big-denominator-no-outcome', round('Returns analyst checking a parcel sorting pilot', [
+    ['I copied the dispatch dates into our sheet. Another analyst designed the sorting pilot.', meets],
+    ['We tried a flag in the sheet. I do not know what we weighed it against.', claim],
+    ['There were 840 parcels in the file. I counted rows, not errors; I have no before-and-after result.', claim],
+    ['A pilot ran at the depot. I counted the parcels and told the lead we still did not know whether sorting was better.', supported],
+  ], { sum: [4, 11], quoteTests: { 2: /840 parcels|counted rows|not errors|no before-and-after/i } })),
+  written('example-is-an-intention', round('Learning coordinator preparing a repair workshop', [
+    ['If I led it I would write the instructions. I have not run that workshop.', none],
+    ['I would probably use pairs. I have not tried or compared ways to teach this task.', claim],
+    ['People should feel more confident afterward. No one has attended yet.', none],
+    ['In theory I would draft a guide so people could fix the hinge themselves. There is no actual result to retell.', partial],
+  ], { sum: [1, 7], quoteTests: { 0: /if I led|would write|have not run/i, 2: /should feel|no one has attended/i } })),
 ] };
 
 async function fact(c, project, source, claim = source) {
@@ -360,6 +436,37 @@ const isolation = { id: 'mock-isolation', title: 'Keep outside evidence out of t
     note: 'BlueUmbra: my preference is to rehearse failed projects; do not assume there was a success.',
     foreign: 'Our namesake project AshTicket misfiled 79% of receipts.',
   }),
+  { id: 'timeout-is-not-duplicate-posting', run: async c => {
+    const r = round('Support analyst investigating failed receipt delivery', [
+      ['I traced timeouts on the receipt sender. A colleague investigated duplicate postings; I did not handle those.', meets],
+      ['I tried delayed retries rather than raising the global timeout because slower requests would occupy the shared workers.', meets],
+      ['I did not see the delivery logs after the change. The effect on receipt timeouts is unknown to me.', none],
+      ['Receipts sometimes never arrived. I changed when the sender tried again, then handed the check to the duty analyst.', supported],
+    ], { forbidden: ['IndigoLatch', '46%'], offTranscript: ['IndigoLatch', '46%'],
+      quoteTests: { 2: /did not see|delivery logs|unknown to me/i } });
+    const otherProblem = await fact(c, 'Receipt processing', 'On IndigoLatch I reduced duplicate postings by 46%.');
+    const m = await grade(c, r);
+    assert.equal(m.report.retryIndex, 2, 'A verified result for a neighboring problem does not evidence this one');
+    assert.deepEqual((await c.state()).facts.find(f => f.id === otherProblem.id), otherProblem);
+  } },
+  { id: 'prior-score-is-not-evidence', run: async c => {
+    const role = 'Shift supervisor coordinating a kitchen changeover';
+    const prior = await grade(c, round(role, [
+      ['For SlatePan I wrote the changeover cards. The head cook approved the menu.', meets],
+      ['I chose color tabs over rewriting the menu because orders could change until opening.', meets],
+      ['I counted wrong trays at every handoff for a week. They fell from eight to one on the same shift.', meets],
+      ['The kitchen kept swapping trays. I added tabs so the server could pair a tray with its order, and fewer trays were returned.', meets],
+    ], { sum: [12, 16] }));
+    const current = await grade(c, round(role, [
+      ['On this shift I checked the cooling rack. A different supervisor chose the closing procedure.', supported],
+      ['I cannot remember considering another option.', none],
+      ['I did not follow up with the night shift. I have no outcome to report.', none],
+      ['We moved the rack before close. I have no more detail.', partial],
+    ], { sum: [2, 8], forbidden: ['SlatePan', 'eight to one', 'color tabs'], offTranscript: ['SlatePan', 'eight to one', 'color tabs'] }));
+    assert.ok(current.report.score < prior.report.score);
+    assert.deepEqual(await saved(c, prior.id), prior);
+    assert.notEqual(current.id, prior.id);
+  } },
 ] };
 
 const citation = { id: 'mock-citation', title: 'Cite each answer independently; reject borrowed or stale wording', conversations: [
@@ -484,6 +591,47 @@ const incomplete = { id: 'mock-incomplete', title: 'Close a partial round withou
     ['I chose a padded divider over bubble wrap because loose plastic got caught on the lid.', 'What effect did you observe after using the padded divider?', /pad|divid|wrap|plastic|lid/i],
     ['I checked the next delivery and found another crack. I do not know what caused it.', 'How would you explain the remaining crack to the next technician?', /crack|deliver|cause/i],
   ], true),
+  { id: 'decline-before-disclosure', run: async c => {
+    const r = round('Archive steward reviewing access requests', [
+      ['For this different example I built a public request index. The archivist made the release decisions.', meets],
+      ['I chose a short index over copying the files because the reading room could share titles but not file contents.', meets],
+      ['I watched readers find the right request form from the index. Before that they returned to the desk to ask which form to take.', meets],
+      ['Readers kept returning to the desk for the right form. I indexed the public titles, and visitors could request files without seeing their contents.', supported],
+    ]);
+    const chat = await openChat(c, r), before = await c.state();
+    const close = await c.say(chat.id, 'Finish this mock');
+    assert.equal(close.session.state, 'closed');
+    assert.equal(close.messages.at(-1).mode, 'scorecard');
+    assert.match(close.messages.at(-1).text, /0\/4 questions answered.*insufficient evidence/is);
+    assert.doesNotMatch(close.messages.at(-1).text, /\/100|\s· Simulated (?:no-)?hire/i);
+    assert.deepEqual(await c.state(), before, 'Declining to answer cannot file evidence or create a grade');
+    const later = await grade(c, r);
+    assert.notEqual(later.id, chat.id);
+    assert.deepEqual(await saved(c, chat.id), before.mocks.find(m => m.id === chat.id));
+  } },
+  { id: 'score-now-then-resume', run: async c => {
+    const r = round('Workshop steward managing a shared tool cage', [
+      ['I numbered the hooks and made a checkout card. The foreperson chose who could borrow tools.', meets],
+      ['I chose stamped numbers over paint because solvent on the handles took paint off.', meets],
+      ['I counted the empty hooks at closing against the checkout cards. Every missing wrench was matched to a borrower that week.', meets],
+      ['Tools disappeared between shifts. I numbered their hooks and cards so the closer could see which missing tools were on loan.', supported],
+    ]);
+    const { id } = await c.api('mocks', 'POST', { target: r.target, requestId: randomUUID() });
+    const blank = await saved(c, id), post = (i, text) => c.api(pathFor(id, 'answers'), 'POST', { index: i, question: blank.questions[i], text });
+    for (let i = 0; i < 2; i++) await post(i, r.turns[i][0]);
+    const before = await saved(c, id);
+    const early = await c.request(pathFor(id, 'report'), 'POST', { assessor: 'local' });
+    assert.equal(early.status, 409);
+    assert.match(await early.text(), /finish all four probes/i);
+    assert.deepEqual(before.answers, answersOf(r).slice(0, 2));
+    assert.equal(before.report, null);
+    assert.equal(before.completedAt, null);
+    assert.deepEqual(await saved(c, id), before);
+    for (let i = 2; i < 4; i++) await post(i, r.turns[i][0]);
+    const full = await publish(c, r, await saved(c, id));
+    assert.deepEqual(full.questions, blank.questions);
+    assert.deepEqual((await c.state()).mocks, [full], 'Resuming should produce one complete graded attempt');
+  } },
 ] };
 
 function retryCase(id, r, index, practice, substitute) {
@@ -536,6 +684,20 @@ const retry = { id: 'mock-retry', title: 'Retry the weak anchor without rewritin
     ['How would you explain the change from the wall chart to a new assembler?', /chart|assembl|foldout|parts|bench/i],
   ] }), 0, 'I designed the foldout and checked the parts order with the assembler. The editor laid out the rest of the manual.',
   'I edited the index rather than drawing the foldout.'),
+  retryCase('missing-alternative', round('Intake administrator handling document handoffs', [
+    ['I added the blue slip to each envelope. The supervisor approved the list of recipients.', meets],
+    ['It was the usual procedure. I cannot name a choice or an alternative we considered.', none],
+    ['I checked the signed register against the envelopes. All of them had a receiving signature that day, unlike the unmarked stack the day before.', meets],
+    ['Envelopes were reaching the next desk unclaimed. I attached a slip so the receiver could sign, and I could trace the handoff.', meets],
+  ]), 1, 'I chose signed slips rather than another tray because the crowded counter had no room for a second tray.',
+  'I chose a numbered tray rather than the slip.'),
+  retryCase('unpack-the-jargon', round('Box office coordinator training evening cover', [
+    ['I rewrote the exchange note; the cashiers processed refunds and the house manager approved exceptions.', meets],
+    ['I chose one note per seat instead of one per booking because families sometimes exchanged only one ticket.', meets],
+    ['I checked the printed seat maps against the exchange notes at doors. Each released seat matched its new ticket; the previous shift had found conflicting stubs.', meets],
+    ['The XB got an RTA. It went through the G2. That was it.', none],
+  ]), 3, 'I wrote a note for each seat we exchanged. At the door, staff matched the new tickets to the seating map.',
+  'I retold it by expanding just the last acronym.'),
 ] };
 
 export default [target, adapt, strong, thin, isolation, citation, incomplete, retry];

@@ -4,7 +4,9 @@ The unit of evaluation is a **candidate journey**, not a nice-looking completion
 
 ## Scenario inventory
 
-Each numbered cell is a separate scenario. Write at least two independently meaningful conversations per cell: a useful path and a near miss, correction, missing prerequisite, or denied action. The identifiers in parentheses are stable selectors, not rankings.
+Each identifier below names a separate scenario. Cover it with at least four distinct conversations: vary both the candidate's situation and what would count as a useful or unsafe response. Include a straightforward path and contrasts such as a near match, a correction, a missing prerequisite or a declined action. The IDs are stable selectors, not rankings.
+
+The corpus has **40 scenarios and 160 runnable conversations**. Use `node .\evals\run.mjs --list` to see their IDs and lanes. Of the 160, 147 are eligible for live runs; the other 13 intentionally supply simulated provider behavior. Some live-eligible cases check rules such as booking consent without assessing the model. The report counts those separately.
 
 | Family | Scenarios 1-4 | Scenarios 5-8 |
 | --- | --- | --- |
@@ -18,7 +20,7 @@ Across the cells, vary role/level, terse vs. detailed responses, qualitative vs.
 
 ## Framework and rollout plan
 
-1. **Write the oracle before tuning.** In `evals/cases`, give every scenario two or more named conversations, the candidate's actual turns, allowed source(s), expected clarification or useful action, and a negative assertion. Assert on meaning or provenance rather than an exact preferred sentence. For imports, inspect job-history nodes, claims, permissions and citations. For planning, inspect blocks before and after consent. For mocks, inspect all four questions, individual quotes, scorecard source and immutable retry state.
+1. **Write the oracle before tuning.** In `evals/cases`, give every conversation a name, the candidate's actual turns, allowed sources, expected clarification or useful action, and a negative assertion. Assert on meaning or provenance rather than an exact preferred sentence. For imports, inspect job-history nodes, claims, permissions and citations. For planning, inspect blocks before and after consent. For mocks, inspect all four questions, individual quotes, scorecard source and immutable retry state.
 2. **Replay the whole app without inference.** Use disposable SQLite workspaces and a loopback model double. Check the real system prompt identity and structured user packet; reject unexpected, missing or surplus calls. Exercise real retrieval, validators, state transitions and writes. Deliberately bad completions belong in replay, not in the live quality denominator. A passing replay is not evidence that a trained model follows a prompt.
 3. **Run the same conversations against an actual model.** An opt-in loopback adapter sends only these synthetic packets to the configured model. Never silently substitute fixtures or label fallback text a good model answer. Slice failures by scenario and prompt pack, retain IDs and timings rather than raw packets in reports, and make any failed assertion or empty selection fail the command. Keep deterministic-only cases identifiable. Use a focused smoke during iteration and the complete eligible set for release evidence.
 4. **Compare like with like.** Run the same corpus revision, provider/model, settings and case selection against two independently pinned packs. Review newly failing IDs even if the average improves. Automated rules cover citations, ownership, structure, booking and boundaries. Separately blind-review narrative naturalness, relevance, specificity and usefulness on a held-out set; two reviewers label pass/partial/fail with a rationale, resolve disagreement before promoting. Do not equate exact phrasing, a self-judging model, or a handful of passing live examples with calibrated quality.

@@ -2,10 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { check, failure } from './gateway.mjs';
+import { check, failure, isSha256 as digest } from './gateway.mjs';
 import { slug } from './harness.mjs';
 
-const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const prompt = value => typeof value === 'string' && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(value);
 
 function index(report) {
@@ -17,6 +16,7 @@ function index(report) {
   check(report.lane === 'live' ? report.model.provider === 'loopback-openai-compatible' &&
     Number.isInteger(report.model.port) && report.model.port >= 1 && report.model.port <= 65535 :
     report.model.provider === 'replay-fixture', 'invalid-report-model');
+  check(!Object.hasOwn(report.model, 'revision') || (report.lane === 'live' && digest(report.model.revision)), 'invalid-report-model-revision');
   check(Array.isArray(report.cases) && report.cases.length, 'empty-report');
   const rows = new Map();
   for (const row of report.cases) {
@@ -45,7 +45,9 @@ function index(report) {
 
 export function compare(baseline, candidate) {
   const before = index(baseline), after = index(candidate);
-  for (const key of ['lane', 'model', 'corpus', 'settings', 'apiBinarySha256', 'evaluatorFingerprint'])
+  check(baseline.lane === candidate.lane, 'different-lane');
+  check(baseline.model.revision === candidate.model.revision, 'different-model-revision');
+  for (const key of ['model', 'corpus', 'settings', 'apiBinarySha256', 'evaluatorFingerprint'])
     check(isDeepStrictEqual(baseline[key], candidate[key]), `different-${key}`);
   check(before.size === after.size && [...before.keys()].every(id => after.has(id)), 'different-case-selection');
   const regressions = [], improvements = [], stillFailing = [];
@@ -58,14 +60,15 @@ export function compare(baseline, candidate) {
     }
     if (b.status !== 'skipped' && c.status === 'skipped') regressions.push({ id, reason: 'lost-coverage' });
     else if (b.status !== 'failed' && c.status === 'failed') regressions.push({ id, reason: 'new-failure' });
-    else if (b.status === 'passed' && c.status === 'passed' && b.exercise === 'model-exercising' && c.exercise !== b.exercise)
+    else if (c.status === 'passed' && b.exercise === 'model-exercising' && c.exercise === 'rules-only')
       regressions.push({ id, reason: 'lost-model-coverage' });
     else if (b.status === 'passed' && c.status === 'passed' && !isDeepStrictEqual(b.calls.map(x => x.prompt), c.calls.map(x => x.prompt)))
       regressions.push({ id, reason: 'changed-model-call-plan' });
     else if (b.status === 'failed' && c.status === 'passed') improvements.push(id);
     else if (b.status === 'failed' && c.status === 'failed') stillFailing.push(id);
   }
-  return { compatible: true, lane: baseline.lane, baseline: baseline.pack.digest, candidate: candidate.pack.digest,
+  const modelRevisionStatus = baseline.lane === 'replay' ? 'not-applicable' : baseline.model.revision ? 'operator-attested-match' : 'unknown';
+  return { compatible: true, lane: baseline.lane, modelRevisionStatus, baseline: baseline.pack.digest, candidate: candidate.pack.digest,
     selected: before.size, regressions, improvements, stillFailing };
 }
 

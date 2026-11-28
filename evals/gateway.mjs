@@ -6,6 +6,7 @@ import { createServer, request } from 'node:http';
 const endpoint = '/v1/chat/completions';
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
+export const isSha256 = value => typeof value === 'string' && value.length === 64 && !/[^a-f0-9]/.test(value);
 export class EvalError extends Error {}
 export function check(condition, code) { if (!condition) throw new EvalError(code); }
 
@@ -50,12 +51,15 @@ export async function modelAdapter(lane, env = process.env) {
   if (lane === 'replay') return { model: { provider: 'replay-fixture', id: 'replay' } };
   check(lane === 'live', 'invalid-lane');
   const raw = env.INTERVIEW_PREP_MODEL_PORT, id = env.INTERVIEW_PREP_MODEL_ID;
+  const revision = env.INTERVIEW_PREP_EVAL_MODEL_REVISION;
   check(typeof raw === 'string' && /^[1-9]\d{0,4}$/.test(raw) && Number(raw) <= 65535, 'live-requires-local-model-port');
   check(typeof id === 'string' && /^[a-z0-9][a-z0-9._:/-]{0,127}$/i.test(id), 'live-requires-model-id');
+  check(revision === undefined || isSha256(revision), 'invalid-model-revision');
   const key = await readKey(env.INTERVIEW_PREP_MODEL_KEY_FILE);
   check(!key || !id.includes(key), 'invalid-model-id');
+  check(!key || !revision?.includes(key), 'invalid-model-revision');
   const port = Number(raw);
-  return { model: { provider: 'loopback-openai-compatible', id, port }, async complete(body, signal) {
+  return { model: { provider: 'loopback-openai-compatible', id, port, ...(revision ? { revision } : {}) }, async complete(body, signal) {
     // Numeric loopback, fixed route, no proxy/dispatcher, redirects, cookies or caller headers.
     const res = await new Promise((resolve, reject) => {
       const req = request({ hostname: '127.0.0.1', port, path: endpoint, method: 'POST', agent: false, signal,

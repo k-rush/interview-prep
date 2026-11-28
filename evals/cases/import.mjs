@@ -192,6 +192,46 @@ export default [
         assert.equal(after.facts.length, 2);
         assert.ok(!after.citations.some(e => e.factId === observed.fact.id));
         assert.equal(after.resume.text, '');
+      } },
+      { id: 'one-project-across-a-transfer', async run(c) {
+        const pages = [line('First position', 'I worked as a Dispatch Trainee.'),
+          line('First assignment', 'I counted damaged bins for Project Spool.'),
+          line('Next position', 'After my transfer I worked as a Freight Estimator.'),
+          line('Next assignment', 'For Project Spool I priced the return route.')];
+        const r = await document(c, 'transfer-resume.txt', pages, analysis('Two jobs included different duties on the same project.', true,
+          entry(1, 'role', 'Dispatch Trainee'), entry(2, 'project', 'Project Spool'), entry(3, 'role', 'Freight Estimator'),
+          entry(4, 'project', 'Project Spool')));
+        const first = at(r, 'First position', 'role', /dispatch trainee/i), next = at(r, 'Next position', 'role', /freight estimator/i);
+        assert.notEqual(first.node.id, next.node.id, 'a transfer is not a rename of the first job');
+        const count = at(r, 'First assignment', 'project', /spool/i), price = at(r, 'Next assignment', 'project', /spool/i);
+        assert.equal(count.node.id, price.node.id, 'the same named project should not be duplicated for a new job');
+        assert.notEqual(count.fact.id, price.fact.id);
+        assert.equal(r.nodes.length, 3);
+        await confirm(c, price.fact.id, price.fact.claim, true, false);
+        const after = await library(c);
+        assert.ok(after.resume.text.includes(price.fact.claim) && !after.resume.text.includes(count.fact.claim));
+        assert.deepEqual(flags(after.facts.find(f => f.id === count.fact.id)), noUses);
+      } },
+      { id: 'one-page-three-different-bullets', async run(c) {
+        const location = 'PDF page 2', bullets = ['I worked as a Scenic Painter.',
+          'I mixed sample pigments for Project Coldframe.', 'I did not design the sets; I matched swatches by hand.'];
+        const passages = [line(location, bullets.join('\n'))];
+        const { id } = await openDocument(c, 'extracted-page.txt', passages);
+        expectBatch(c, bullets.map(text => line(location, text)), analysis('A scenic painter mixed pigments and matched swatches without designing sets.', true,
+          entry(1, 'role', 'Scenic Painter'), entry(2, 'project', 'Project Coldframe'), entry(3, 'statement')));
+        const detail = await report(c, id, 'document:done'), r = await filed(c, id, passages, []);
+        assert.ok(last(detail).text.includes(r.source.description));
+        assert.deepEqual(r.evidence.map(e => e.quote).sort(), [...bullets].sort(), 'preserve each bullet, despite identical page locations');
+        const [job, project, limit] = bullets.map(text => r.evidence.find(e => e.quote === text));
+        assert.equal(job.node?.kind, 'role'); assert.match(job.node.label, /scenic painter/i);
+        assert.equal(project.node?.kind, 'project'); assert.match(project.node.label, /coldframe/i);
+        assert.equal(limit.citation.nodeId, null);
+        assert.match(limit.fact.claim, /did not design.*matched swatches/i);
+        assert.ok(r.evidence.every(e => e.citation.location === location));
+        await reject(c, project.fact.id);
+        const after = await library(c);
+        assert.deepEqual(after.citations.map(e => e.factId).sort(), [job.fact.id, limit.fact.id].sort(),
+          'rejecting one bullet must not remove other evidence on the same page');
       } }
     ]
   },
@@ -226,6 +266,47 @@ export default [
         const after = await library(c);
         assert.deepEqual(after.facts.map(flags), [[true, false, false]]);
         assert.equal(after.resume.factCount, 0, 'confirming a held role is not consent to use it');
+      } },
+      { id: 'export-stamp-is-not-a-service-date', async run(c) {
+        const other = await addNode(c, 'role', 'Glass Grader', { employer: 'Torchlight Works', dates: '2019' });
+        const pages = [line('Export stamp', 'Profile export generated: 2025-11-04'),
+          line('Undated experience', 'I worked as a Glass Grader in a second workshop.')];
+        const r = await document(c, 'another-position.txt', pages, analysis('A second glass grading position is listed without dates.', true,
+          entry(2, 'role', 'Glass Grader')), { stage: 'document:review',
+          inspect: p => assert.ok(p.search_history.some(h => h.kind === 'role' && /Torchlight Works.*2019/.test(h.detail))) });
+        const offered = at(r, 'Undated experience').fact;
+        assert.ok(!r.evidence.some(e => e.citation.location === 'Export stamp'));
+        assert.doesNotMatch(r.source.description, /Torchlight|2019/i, 'history-search dates are not dates from the export');
+        assert.match(last(r.detail).text, /Torchlight Works/);
+        const done = await c.say(r.id, 'Keep separate');
+        assert.equal(done.session.stage, 'document:done');
+        const after = await library(c), link = after.citations.find(e => e.factId === offered.id);
+        const separate = after.nodes.find(n => n.id === link.nodeId);
+        assert.notEqual(separate.id, other);
+        assert.equal(separate.dates, ''); assert.equal(separate.employer, '');
+        assert.equal(after.nodes.find(n => n.id === other).dates, '2019');
+        assert.deepEqual(flags(after.facts.find(f => f.id === offered.id)), noUses);
+      } },
+      { id: 'a-profile-link-then-an-authorized-export', async run(c) {
+        const url = 'https://profiles.invalid/sample/botany-director';
+        const bookmark = await post(c, 'experience/sources', { category: 'project-bookmark', title: 'Botany Director search result',
+          url, reviewed: true, useModel: true, excerpts: [] });
+        const pointer = await library(c);
+        assert.equal(pointer.sources.find(s => s.id === bookmark.id).url, url);
+        assert.deepEqual([pointer.nodes, pointer.facts, pointer.citations], [[], [], []], 'a URL and its title do not establish work history');
+        const pages = [line('Own experience card', 'My profile lists my job as Seed Technician at Rainbarrel Nursery.')];
+        const r = await document(c, 'my-profile-extract.txt', pages, analysis('The profile lists a seed technician position at a nursery.', true,
+          entry(1, 'role', 'Seed Technician')), { inspect: p => assert.deepEqual(p.search_history, []) });
+        const role = at(r, 'Own experience card', 'role', /seed technician/i);
+        assert.equal(role.node.dates, '');
+        assert.equal(r.sources.length, 2);
+        assert.ok(!r.citations.some(e => e.sourceId === bookmark.id));
+        assert.doesNotMatch(r.source.description, /Director|profiles\.invalid/i);
+        assert.equal(r.nodes.length, 1);
+        await confirm(c, role.fact.id, role.fact.claim, true, false);
+        const after = await library(c);
+        assert.ok(after.resume.text.includes(role.fact.claim));
+        assert.doesNotMatch(after.resume.text, /Director|profiles\.invalid/i);
       } }
     ]
   },
@@ -282,6 +363,23 @@ export default [
           assert.ok(!r.nodes.some(n => /director/i.test(n.label)));
           assert.ok(!r.evidence.some(e => e.citation.location === 'Signature'));
         }
+      } },
+      { id: 'testimonial-inside-my-resume', async run(c) {
+        const pages = [line('Employment', 'I worked as a Sample Technician in the blending room.'),
+          line('Quoted reference', 'Supervisor testimonial: “As Production Chief, I relied on the candidate’s shift notes.”'),
+          line('My duties', 'I recorded the blending temperatures for Project Ashwheel.')];
+        const r = await document(c, 'cv-with-testimonial.txt', pages, analysis('A sample technician kept blending records, which a supervisor used.', true,
+          entry(1, 'role', 'Sample Technician'), entry(3, 'project', 'Project Ashwheel')));
+        const ownJob = at(r, 'Employment', 'role', /sample technician/i);
+        at(r, 'My duties', 'project', /ashwheel/i);
+        assert.deepEqual(r.nodes.filter(n => n.kind === 'role').map(n => n.id), [ownJob.node.id],
+          'an embedded reference is not another held job, even in a real resume');
+        for (const e of r.evidence.filter(e => e.citation.location === 'Quoted reference')) {
+          assert.equal(e.citation.nodeId, null);
+          assert.equal(e.fact.claim, pages[1].text, 'if retained, the supervisor’s words must remain attributed');
+        }
+        await confirm(c, ownJob.fact.id, ownJob.fact.claim, true, false);
+        assert.doesNotMatch((await library(c)).resume.text, /Production Chief/i);
       } }
     ]
   },
@@ -322,6 +420,22 @@ export default [
         assert.equal(e.fact.claim, pages[0].text, 'a complete sentence before a retraction is still a misleading quote');
         await reject(c, e.fact.id);
         assert.deepEqual((await library(c)).citations, []);
+      } },
+      { id: 'shelved-trial-not-a-public-launch', async run(c) {
+        const pages = [line('Trial decision', 'I shelved Project Pinrail after the clerks found its labels harder to read.'),
+          line('Scope', 'Our public counter never used the trial labels.')];
+        const r = await document(c, 'trial-closure.txt', pages, analysis('The label trial stopped after negative feedback and did not reach the public counter.', false,
+          entry(1, 'project', 'Project Pinrail'), entry(2, 'statement')));
+        const trial = at(r, 'Trial decision', 'project', /pinrail/i), scope = at(r, 'Scope');
+        assert.match(trial.fact.claim, /shelved.*harder to read/i);
+        assert.match(scope.fact.claim, /never used/i);
+        const found = await recall(c, r.id, 'What can my Pinrail notes support about a public rollout?', 'Pinrail public rollout',
+          'Your notes describe a shelved label trial; the public counter never used the labels.', hits => {
+            for (const e of [trial, scope]) assert.ok(hits.some(h => h.kind === 'unreviewed statement' && h.text === e.fact.claim));
+          });
+        assert.match(found.answer, /shelv|abandon|halt|stop|never|not (?:used|rolled|deployed|launch)|no (?:evidence|public rollout)|didn['’]t/i);
+        assert.match(found.answer, /label|trial|pilot|public counter/i);
+        assert.doesNotMatch(found.answer, /(?:you|the team) (?:successfully )?(?:launched|rolled out) .*public|\d+\s*%/i);
       } }
     ]
   },
@@ -375,6 +489,43 @@ export default [
         assert.notEqual(link.fact.id, original);
         assert.deepEqual(flags(r.facts.find(f => f.id === original)), [true, false, true]);
         assert.match(last(r.detail).text, /filed under.+dispatcher/i);
+      } },
+      { id: 'forget-the-original-authority', async run(c) {
+        const words = 'I marked defective seams on the return slips.';
+        const original = await savedFact(c, null, 'Approved personal note', words, words, true, true);
+        const primary = (await c.api('experience')).citations.find(e => e.factId === original).sourceId;
+        const pages = [line('Carbon copy', words)];
+        const r = await document(c, 'independent-slip.txt', pages, analysis('A return slip records the marking of defective seams.', false,
+          entry(1, 'statement')), { inspect: p => assert.ok(p.search_history.some(h => h.kind === 'confirmed fact' && h.detail === words)) });
+        assert.equal(at(r, 'Carbon copy').fact.id, original);
+        assert.equal(r.citations.filter(e => e.factId === original).length, 2);
+        await c.api(`experience/sources/${primary}`, 'DELETE');
+        const after = await library(c);
+        assert.equal(after.sources.length, 1);
+        assert.deepEqual(after.citations.map(e => [e.sourceId, e.factId, e.location]), [[r.id, original, 'Carbon copy']]);
+        assert.deepEqual(after.facts.map(f => [f.id, f.claim, ...flags(f)]), [[original, words, ...noUses]],
+          'verbatim independent evidence survives, but it does not inherit the forgotten source’s permissions');
+        assert.ok(after.facts[0].source.includes(r.source.title));
+        assert.equal(after.resume.text, '');
+      } },
+      { id: 'project-shares-a-job-title', async run(c) {
+        const job = await addNode(c, 'role', 'Route Inspector', { employer: 'Folded Chart Office' });
+        const project = await addNode(c, 'project', 'Route Inspector');
+        const words = 'I was a Route Inspector at Folded Chart Office.';
+        const original = await savedFact(c, job, 'Position record', words, words, false, true);
+        const pages = [line('Project register', 'I verified route codes for the project named Route Inspector.')];
+        const r = await document(c, 'code-register.txt', pages, p => analysis('A project register records checks of route codes.', false,
+          entry(1, 'project', 'Route Inspector', p.search_history.find(h => h.kind === 'project' && h.label === 'Route Inspector').number)), {
+          inspect(p) {
+            for (const kind of ['role', 'project']) assert.ok(p.search_history.some(h => h.kind === kind && h.label === 'Route Inspector'));
+          }
+        });
+        const record = at(r, 'Project register', 'project', /route inspector/i);
+        assert.equal(record.node.id, project);
+        assert.notEqual(record.fact.id, original);
+        assert.equal(r.nodes.length, 2);
+        assert.ok(!r.citations.some(e => e.sourceId === r.id && e.nodeId === job));
+        assert.deepEqual(flags(r.facts.find(f => f.id === original)), [true, false, true]);
       } }
     ]
   },
@@ -445,6 +596,30 @@ export default [
         assert.equal(at(d, 'Supplement line', 'role', /bookbinder/i).node.employer, 'Glade Bindery');
         assert.equal(d.citations.find(e => e.sourceId === r.id && e.location === 'Trade').nodeId, null,
           'later evidence must not retroactively link the ambiguous passage');
+      } },
+      { id: 'renamed-option-then-declined-link', async run(c) {
+        const old = await addNode(c, 'project', 'Breakwater Pilot');
+        const pages = [line('East notes', 'I traced the pipes for Breakwater Pilot East.')];
+        const r = await document(c, 'east-notes.txt', pages, analysis('Pipe tracing for the eastern pilot is recorded.', false,
+          entry(1, 'project', 'Breakwater Pilot East')), { stage: 'document:review' });
+        const candidate = at(r, 'East notes');
+        assert.match(last(r.detail).text, /1\. Breakwater Pilot\b/);
+        await c.api(`experience/nodes/${old}`, 'PUT', { kind: 'project', label: 'Breakwater Pilot West',
+          revision: r.nodes.find(n => n.id === old).revision });
+        const stale = await c.say(r.id, 'Use 1');
+        assert.equal(stale.session.stage, 'document:review');
+        assert.equal(last(stale).mode, 'history review');
+        assert.match(last(stale).text, /changed/i);
+        assert.match(last(stale).text, /1\. Breakwater Pilot West/);
+        assert.equal((await library(c)).citations.find(e => e.id === candidate.citation.id).nodeId, null);
+        const done = await c.say(r.id, 'Skip');
+        assert.equal(done.session.stage, 'document:done');
+        assert.match(last(done).text, /unfiled/i);
+        const after = await library(c);
+        assert.deepEqual(after.nodes.map(n => [n.id, n.label]), [[old, 'Breakwater Pilot West']]);
+        assert.equal(after.citations[0].nodeId, null);
+        assert.equal(after.citations[0].factId, candidate.fact.id);
+        assert.deepEqual(flags(after.facts[0]), noUses);
       } }
     ]
   },
@@ -486,6 +661,20 @@ export default [
         const signature = at(r, 'Reviewer signature').fact;
         await reject(c, signature.id);
         assert.ok(!(await library(c)).citations.some(e => e.factId === signature.id));
+      } },
+      { id: 'blank-cover-sheet-then-a-work-page', async run(c) {
+        const form = [line('Banner', 'Employment verification request — blank cover sheet'),
+          line('Address field', 'Contact: sample-desk@example.invalid'), line('Table header', 'Position | Start | End | Employer')];
+        const blank = await document(c, 'cover-only.txt', form, analysis('A blank verification cover sheet contains no employment details.', false));
+        assert.match(blank.source.description, /blank|form|cover|header|verification|no (?:work|employment)/i);
+        assert.doesNotMatch(blank.source.description, /@/);
+        assert.deepEqual([blank.nodes, blank.facts, blank.evidence], [[], [], []]);
+        const pages = [line('Actual duty', 'I repaired display hinges for Project Hazelwire.')];
+        const work = await reviewed(c, 'resume', 'Work page I meant to select', pages, proposal([label('project', 'Project Hazelwire')], pages));
+        const repaired = at(work, 'Actual duty', 'project', /hazelwire/i);
+        assert.equal(work.sources.length, 2);
+        assert.ok(work.citations.every(e => e.sourceId === work.id && e.factId === repaired.fact.id),
+          'the empty cover sheet cannot corroborate the separately submitted work page');
       } }
     ]
   },
@@ -567,6 +756,30 @@ export default [
         await post(c, `chats/${id}/import`);
         assert.deepEqual((await library(c)).citations, r.citations);
         assert.equal((await chat(c, id)).messages.length, 2);
+      } },
+      { id: 'reconnect-during-match-review', async run(c) {
+        const original = await addNode(c, 'project', 'Pine Ledger');
+        const pages = [line('Final note', 'I indexed repairs for Pine Ledger Mobile.')];
+        const r = await document(c, 'mobile-ledger.txt', pages, analysis('A mobile ledger was used to index repairs.', false,
+          entry(1, 'project', 'Pine Ledger Mobile')), { stage: 'document:review' });
+        const offered = at(r, 'Final note');
+        await post(c, `chats/${r.id}/import`);
+        assert.deepEqual(await chat(c, r.id), r.detail, 'reconnecting must resume the outstanding question, not file or ask again');
+        const route = `chats/${r.id}/turns`;
+        const turn = { text: 'Keep separate', requestId: randomUUID(), revision: r.detail.session.revision };
+        await post(c, route, turn);
+        const done = await chat(c, r.id);
+        assert.equal(done.session.stage, 'document:done');
+        assert.equal(last(done).mode, 'history review');
+        assert.match(last(done).text, /filed.*Pine Ledger Mobile/i);
+        await post(c, route, turn); // The client's acknowledgement of its first submission was lost.
+        assert.deepEqual(await chat(c, r.id), done);
+        const after = await library(c);
+        const separate = after.nodes.find(n => n.id !== original);
+        assert.equal(after.nodes.length, 2);
+        assert.deepEqual(after.citations.map(e => [e.factId, e.nodeId, e.sourceId]), [[offered.fact.id, separate.id, r.id]]);
+        assert.equal(after.facts.length, 1);
+        assert.deepEqual(flags(after.facts[0]), noUses);
       } }
     ]
   }
