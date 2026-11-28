@@ -1,6 +1,6 @@
 {
   "contract": 1,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "ids": [
     "chat.coach", "chat.rehearse", "chat.search", "experience.probe",
     "import.document", "import.excerpts", "mock.assess", "mock.next",

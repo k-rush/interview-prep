@@ -27,19 +27,30 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Replay synthetic conversations without a provider
-        shell: pwsh
-        run: ./dev.ps1 eval replay
-      - name: Prove compatibility and package the reviewed bytes
+      - name: Build the compatible host and check prompt contracts
         shell: bash
         run: |
           set -euo pipefail
-          node --test tests/prompt-coverage.test.mjs tests/prompt-pack.test.mjs
-          node scripts/prompt-pack.mjs build "$RUNNER_TEMP/coach-prompts.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          dotnet build apps/api/InterviewPrep.Api.csproj -c Release -p:RestoreLockedMode=true --nologo --verbosity quiet
+          node --test tests/assessment-replay.test.mjs tests/prompt-*.test.mjs evals/*.test.mjs
+      - name: Replay synthetic conversations against the exact artifact to be retained
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/coach-prompts.json"
+          store="$RUNNER_TEMP/coach-eval-store"
+          release=$(node scripts/prompt-pack.mjs build "$file")
+          digest=$(jq -er '.digest' <<<"$release")
+          node scripts/prompt-pack.mjs install "$file" "$store"
+          node scripts/prompt-pack.mjs activate "$store" "$digest" none
+          node evals/run.mjs --lane replay --store "$store" --report "$RUNNER_TEMP/coach-replay.json"
+          printf '%s\n' "$release" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable candidate; do not activate any ring
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coach-prompts-${{ github.sha }}
-          path: ${{ runner.temp }}/coach-prompts.json
+          path: |
+            ${{ runner.temp }}/coach-prompts.json
+            ${{ runner.temp }}/coach-replay.json
           if-no-files-found: error
           retention-days: 30
