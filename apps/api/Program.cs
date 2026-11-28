@@ -68,7 +68,7 @@ AccountsModule.Register(builder.Services);
 builder.Services.AddHttpClient<PublicResearch>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(8); client.MaxResponseContentBufferSize = 256000;
-}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
+}).RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPage.Transport);
 var speechPort = Environment.GetEnvironmentVariable("INTERVIEW_PREP_SPEECH_PORT");
 if (speechPort is not null && (!int.TryParse(speechPort, out var voicePort) || voicePort is < 1 or > 65535))
     throw new InvalidOperationException("INTERVIEW_PREP_SPEECH_PORT must be a local TCP port.");

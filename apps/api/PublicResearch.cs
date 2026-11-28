@@ -27,6 +27,7 @@ public sealed class PublicResearch(HttpClient http)
 
     public Task<ResearchResult> Find(string company, CancellationToken ct) => Find(company, false, ct);
     public Task<ResearchResult> FindForPlan(string company, CancellationToken ct) => Find(company, true, ct);
+    public Task<PublicPageResult> ReadPage(string url, CancellationToken ct) => PublicPage.Read(http, url, ct);
 
     private async Task<ResearchResult> Find(string company, bool checkOfficial, CancellationToken ct)
     {
