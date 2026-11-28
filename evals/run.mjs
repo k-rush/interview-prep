@@ -77,7 +77,7 @@ async function main(argv) {
       host = await localHost({ after: fn => cleanup.push(fn) }, gateway.port, {
         INTERVIEW_PREP_MODEL_ID: adapter.model.id, INTERVIEW_PREP_MODEL_KEY_FILE: keyFile,
         INTERVIEW_PREP_SCOUT_REPLAY_DIR: fixtures, INTERVIEW_PREP_SCOUT_SEARCH_REPLAY_FILE: recording,
-        INTERVIEW_PREP_SCOUT_BOARDS: '', INTERVIEW_PREP_HN_JOB_SEARCH: '0',
+        INTERVIEW_PREP_SCOUT_BOARDS: '', INTERVIEW_PREP_HN_JOB_SEARCH: '0', INTERVIEW_PREP_RESEARCH_OFFLINE: '1',
         ...(opts.store ? { INTERVIEW_PREP_PROMPT_STORE: opts.store } : {})
       });
     } catch (error) {

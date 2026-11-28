@@ -156,7 +156,8 @@ export default [
       stage(await c.say(id, 'skip'), 'plan:role', /role/i);
       stage(await c.say(id, 'no'), 'plan:role', /title/i);
       stage(await c.say(id, spec.role), 'plan:description', /redacted|permitted/i);
-      stage(await c.say(id, 'https://brief.example.invalid/private'), 'plan:description', /summarize|permitted excerpt/i);
+      stage(await c.say(id, 'https://127.0.0.1/internal-brief'), 'plan:description', /public HTTPS link/i);
+      stage(await c.say(id, 'https://brief.example.invalid/posting'), 'plan:description', /couldn.t read.*permitted job description/i);
       const now = Date.now(), utcDay = localDay(now, 'UTC');
       const zone = ['Pacific/Pago_Pago', 'Pacific/Kiritimati'].find(z =>
         localDay(now, z) !== utcDay && localDay(now, z) === localDay(now + 10 * minute, z));
@@ -239,7 +240,7 @@ export default [
       await emptySchedule(c);
       const detail = await save(c, id, spec, 'no'), target = await targetFor(c, detail);
       const starts = preview(detail, target.interviewAt);
-      assert.match(target.researchStatus, /declined.*no lookup/i);
+      assert.match(target.researchStatus, /declined.*no company lookup/i);
       assert.equal(target.researchedAt, null);
       assert.deepEqual(target.sources, []);
       await unbooked(c, target.id);
