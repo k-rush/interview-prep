@@ -63,12 +63,17 @@ else Directory.CreateDirectory(data, UnixFileMode.UserRead | UnixFileMode.UserWr
 var connection = new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, customer != null ? "customers.sqlite" : "practice.sqlite"), ForeignKeys = true };
 using var writerLease = staging?.Restore(connection.DataSource);
 builder.Services.AddDbContext<PracticeDb>(db => db.UseSqlite(connection.ToString()));
+var promptStore = Environment.GetEnvironmentVariable("INTERVIEW_PREP_PROMPT_STORE");
+if (promptStore != null && !Path.IsPathFullyQualified(promptStore))
+    throw new InvalidOperationException("INTERVIEW_PREP_PROMPT_STORE must be an absolute path to the trusted prompt store.");
+builder.Services.AddSingleton(sp => new PromptCatalog(promptStore, sp.GetRequiredService<ILogger<PromptCatalog>>()));
+builder.Services.AddScoped(sp => sp.GetRequiredService<PromptCatalog>().Snapshot());
 DiscoveryModule.Register(builder.Services);
 AccountsModule.Register(builder.Services);
 builder.Services.AddHttpClient<PublicResearch>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(8); client.MaxResponseContentBufferSize = 256000;
-}).RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicPage.Transport);
+}).RemoveAllLoggers().ConfigurePrimaryHttpMessageHandler(PublicResearch.Transport);
 var speechPort = Environment.GetEnvironmentVariable("INTERVIEW_PREP_SPEECH_PORT");
 if (speechPort is not null && (!int.TryParse(speechPort, out var voicePort) || voicePort is < 1 or > 65535))
     throw new InvalidOperationException("INTERVIEW_PREP_SPEECH_PORT must be a local TCP port.");
@@ -164,7 +169,8 @@ if (staging != null || customer != null)
 app.UseDefaultFiles();
 app.UseStaticFiles();
 var version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-app.MapGet("/healthz", () => Results.Ok(new { status = "ok", mode = customer != null ? "customer" : staging != null ? "private-test" : "local-practice", version }));
+app.MapGet("/healthz", (PromptPack pack) => Results.Ok(new { status = "ok", mode = customer != null ? "customer" : staging != null ? "private-test" : "local-practice",
+    version, promptPack = new { pack.Version, pack.Digest } }));
 app.MapGet("/readyz", async (PracticeDb db, CancellationToken ct) => await db.Database.CanConnectAsync(ct)
     ? Results.Ok(new { status = "ready" }) : Results.StatusCode(503));
 WorkspaceApi.Map(app, LocalCoach.Enabled);

@@ -9,6 +9,16 @@ public sealed record ResearchSource(string Kind, string Title, string Url, strin
 public sealed record ResearchResult(ResearchSource[] Sources, string Status);
 public sealed class PublicResearch(HttpClient http)
 {
+    // The real page reader pins public addresses and deliberately bypasses ambient proxies.
+    // Synthetic evaluations must deny this transport before even resolving a hostname.
+    internal static HttpMessageHandler Transport() => Environment.GetEnvironmentVariable("INTERVIEW_PREP_RESEARCH_OFFLINE") == "1"
+        ? new OfflineTransport() : PublicPage.Transport();
+    private sealed class OfflineTransport : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+    }
+
     private sealed record LicensedTheme(string Company, string Publisher, string Url, string Theme, DateTimeOffset ExpiresAt);
     public static bool IsCompany(string name) => Regex.IsMatch(name, @"^[\p{L}\p{N}][\p{L}\p{N} .&'-]{0,99}$");
     public static bool IsHttpsLink(string? text) => text is { Length: <= 1500 } && Uri.TryCreate(text, UriKind.Absolute, out var url) &&

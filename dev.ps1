@@ -1,12 +1,13 @@
 #requires -Version 7.3
 param(
     [ValidateSet('up', 'test', 'eval')][string]$Command = 'up',
-    [string]$Lane
+    [string]$Lane,
+    [string]$Case
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-if (($Command -eq 'eval' -and $Lane -ne 'replay') -or ($Command -ne 'eval' -and $Lane)) {
-    throw 'Use dev.ps1 up, dev.ps1 test, or dev.ps1 eval replay.'
+if (($Command -eq 'eval' -and $Lane -notin 'replay','live') -or ($Command -ne 'eval' -and ($Lane -or $Case))) {
+    throw 'Use dev.ps1 up, dev.ps1 test, or dev.ps1 eval replay|live [scenario[/conversation]].'
 }
 $previousRoot = $env:INTERVIEW_PREP_WEBROOT
 $previousBuild = $env:INTERVIEW_PREP_BUILD
@@ -41,7 +42,15 @@ try {
                 Where-Object Name -ne 'assessment-replay.test.mjs' | ForEach-Object FullName)
             node --test --test-concurrency=2 @tests
         }
-        'eval' { node --test tests/assessment-replay.test.mjs }
+        'eval' {
+            if ($Lane -eq 'replay' -and !$Case) {
+                $checks = @((Join-Path $PSScriptRoot 'tests' 'assessment-replay.test.mjs')) +
+                    @(Get-ChildItem (Join-Path $PSScriptRoot 'evals') -Filter '*.test.mjs' | ForEach-Object FullName)
+                node --test @checks
+            }
+            $selection = if ($Case) { @('--case', $Case) } else { @() }
+            node (Join-Path $PSScriptRoot 'evals' 'run.mjs') --lane $Lane @selection
+        }
     }
 } finally {
     Pop-Location

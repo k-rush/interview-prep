@@ -12,6 +12,7 @@ COPY global.json ./
 COPY apps/api/*.csproj apps/api/packages.lock.json apps/api/
 RUN dotnet restore apps/api/InterviewPrep.Api.csproj --locked-mode
 COPY apps/api/*.cs apps/api/appsettings.json apps/api/
+COPY apps/api/Prompts/ apps/api/Prompts/
 COPY apps/api/wwwroot/index.html apps/api/wwwroot/
 COPY --from=web /src/apps/api/wwwroot/assets/ apps/api/wwwroot/assets/
 ARG SOURCE_REVISION

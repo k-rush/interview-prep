@@ -8,6 +8,10 @@ apps/api/*
 !apps/api/*.csproj
 !apps/api/packages.lock.json
 !apps/api/appsettings.json
+!apps/api/Prompts/
+apps/api/Prompts/*
+!apps/api/Prompts/*.txt
+!apps/api/Prompts/release.json
 !apps/api/wwwroot/
 apps/api/wwwroot/*
 !apps/api/wwwroot/index.html

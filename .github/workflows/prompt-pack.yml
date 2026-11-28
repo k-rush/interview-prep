@@ -1,0 +1,56 @@
+name: Verify and package coach prompts
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/api/Prompts/**'
+      - 'evals/**'
+      - 'scripts/prompt-pack.mjs'
+      - 'tests/prompt-*.test.mjs'
+      - '.github/workflows/prompt-pack.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pack:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Build the compatible host and check prompt contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build apps/api/InterviewPrep.Api.csproj -c Release -p:RestoreLockedMode=true --nologo --verbosity quiet
+          node --test tests/assessment-replay.test.mjs tests/prompt-*.test.mjs evals/*.test.mjs
+      - name: Replay synthetic conversations against the exact artifact to be retained
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/coach-prompts.json"
+          store="$RUNNER_TEMP/coach-eval-store"
+          release=$(node scripts/prompt-pack.mjs build "$file")
+          digest=$(jq -er '.digest' <<<"$release")
+          node scripts/prompt-pack.mjs install "$file" "$store"
+          node scripts/prompt-pack.mjs activate "$store" "$digest" none
+          node evals/run.mjs --lane replay --store "$store" --report "$RUNNER_TEMP/coach-replay.json"
+          printf '%s\n' "$release" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain the immutable candidate; do not activate any ring
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coach-prompts-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/coach-prompts.json
+            ${{ runner.temp }}/coach-replay.json
+          if-no-files-found: error
+          retention-days: 30
