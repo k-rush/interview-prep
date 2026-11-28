@@ -46,7 +46,11 @@ internal static class ChatTurnStream
         { result = Results.Conflict("This chat changed. Reload its latest turn."); }
         if (result is Saved saved)
         {
-            c.Features.Get<PrivateStaging.WriteCheckpoint>()?.Save();
+            var checkpoint = c.Features.Get<PrivateStaging.WriteCheckpoint>();
+            // Templates and validated artifacts can have no model deltas. Show the committed
+            // text now; even a disconnect during this last preview must not skip the backup.
+            try { if (saved.Text is not null) await Preview(saved.Text); }
+            finally { checkpoint?.Save(); }
             await Write(new { type = "done", id = saved.Id, text = saved.Text });
         }
         else if (c.Response.HasStarted)

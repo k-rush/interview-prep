@@ -154,8 +154,9 @@ test('streamed previews lose to a concurrent committed turn; retries preserve st
   const response = await stream(input);
   assert.match(response.headers.get('content-type'), /application\/x-ndjson/);
   const winner = {...input, requestId:randomUUID(), text:'Remember: Keep it short.'};
-  const [done] = await events(await stream(winner));
+  const [preview,done] = await events(await stream(winner));
   assert.equal(done.type,'done'); assert.equal(done.id,id);
+  assert.deepEqual(preview,{type:'delta',text:done.text});
   finish();
   const frames = await events(response), error = frames.at(-1);
   assert.deepEqual(frames[0],{type:'delta',text:'Which part'});
@@ -164,6 +165,6 @@ test('streamed previews lose to a concurrent committed turn; retries preserve st
   assert.equal(detail.messages.length,3); assert.equal(detail.messages.at(-1).text,done.text);
   assert.deepEqual((await app.state(owner)).facts,[]);
   assert.equal((await stream(input)).status,409);
-  assert.deepEqual(await events(await stream(winner)),[done]);
+  assert.deepEqual(await events(await stream(winner)),[preview,done]);
   assert.equal(calls,1);
 });

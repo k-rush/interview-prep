@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using InterviewPrep;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 
 internal static class PrivateStagingChecks
@@ -41,8 +42,36 @@ internal static class PrivateStagingChecks
             };
         }
     }
+    private sealed class PreviewBody(bool disconnected) : MemoryStream
+    {
+        public override Task FlushAsync(CancellationToken ct) => disconnected
+            ? Task.FromException(new IOException("Synthetic client disconnected.")) : base.FlushAsync(ct);
+    }
+
     internal static async Task Run()
     {
+        foreach (var disconnected in new[] { false, true })
+        {
+            var context = new DefaultHttpContext();
+            using var body = new PreviewBody(disconnected);
+            context.Response.Body = body; context.Request.Headers.Accept = ChatTurnStream.MediaType;
+            string? atCheckpoint = null;
+            context.Features.Set(new PrivateStaging.WriteCheckpoint(() => atCheckpoint = Encoding.UTF8.GetString(body.ToArray())));
+            try
+            {
+                await ChatTurnStream.Run(context, _ => Task.FromResult<IResult>(new ChatTurnStream.Saved(Guid.NewGuid(), "Ready to practice?")));
+                if (disconnected) throw new Exception("A closed preview stream should fail to write.");
+            }
+            catch (IOException) when (disconnected) { }
+            if (atCheckpoint is null) throw new Exception("A committed turn must checkpoint even on disconnect.");
+            if (!disconnected)
+            {
+                using var preview = JsonDocument.Parse(atCheckpoint);
+                if (preview.RootElement.GetProperty("type").GetString() != "delta" ||
+                    !Encoding.UTF8.GetString(body.ToArray()).Contains("\"type\":\"done\""))
+                    throw new Exception("The final text should be visible before the checkpoint, and done only afterward.");
+            }
+        }
         var root = Directory.CreateTempSubdirectory("interview-synthetic-test-");
         try {
             var stage = new PrivateStaging { Tester = Guid.NewGuid(), Tenant = Guid.NewGuid(),
