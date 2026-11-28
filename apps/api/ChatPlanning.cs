@@ -19,6 +19,7 @@ public static class ChatPlanning
         public string? Company { get; set; }
         public string? Role { get; set; }
         public string? Description { get; set; }
+        public string? JobUrl { get; set; }
         public string? Zone { get; set; }
         public DateOnly? Day { get; set; }
         public DateTimeOffset? InterviewAt { get; set; }
@@ -49,10 +50,12 @@ public static class ChatPlanning
         TimeZoneInfo.ConvertTime(at, tz).ToString("yyyy-MM-dd HH:mm '(UTC'zzz')'", CultureInfo.InvariantCulture);
     private static string DatePrompt(string zone) => $"When is the interview in {zone}? Use YYYY-MM-DD and a time, for example 14:30. You can give the date first, or say 'zone' followed by a different timezone.";
 
-    public sealed record Materials(ResearchResult? Research, string? Question);
+    public sealed record Materials(ResearchResult? Research, string? Question, PublicPageResult? Page = null);
 
     public static async Task<Materials?> Prepare(ChatSession session, string text, PublicResearch research, LocalCoach coach, CancellationToken ct)
     {
+        if (session.Stage == "plan:description" && Uri.TryCreate(text.Trim(), UriKind.Absolute, out _))
+            return new(null, null, await research.ReadPage(text.Trim(), ct));
         if (session.Stage != "plan:research") return null;
         var word = text.Trim().TrimEnd('.', '!').ToLowerInvariant();
         var draft = Context(session)["planning"]?.Deserialize<Draft>(Json);
@@ -94,13 +97,21 @@ public static class ChatPlanning
             case "plan:role":
                 if (text.Length is 0 or > 160 || text.Any(char.IsControl) || No(word)) return "Give a short role title (up to 160 characters), or say 'cancel'.";
                 draft.Role = text;
-                return Ask("description", "What does the job involve? Paste a permitted, redacted description or summarize the priorities. I won’t fetch pasted links. Say 'skip' if you don’t have it.");
+                return Ask("description", "What does the job involve? Send a public HTTPS job link and I’ll open that page, paste a permitted, redacted description, or summarize the priorities. Don’t send private or sign-in links. Say 'skip' if you don’t have it.");
             case "plan:description":
-                if (text.Length is 0 or > 12000 || PublicResearch.IsHttpsLink(text)) return "Please summarize the job, paste a permitted excerpt (up to 12,000 characters), or say 'skip'.";
-                draft.Description = word == "skip" ? "" : text;
-                if (!Zone(zone, out var browserZone)) return Ask("zone", "Which timezone should I use? Give its name, for example America/Chicago or UTC.");
+                if (text.Length is 0 or > 12000) return "Send a public HTTPS job link, summarize the job, paste a permitted excerpt (up to 12,000 characters), or say 'skip'.";
+                var opened = "";
+                if (Uri.TryCreate(text, UriKind.Absolute, out _))
+                {
+                    var page = prepared?.Page ?? await research.ReadPage(text, ct);
+                    if (page.Text is null) return page.Status;
+                    draft.Description = page.Text; draft.JobUrl = page.Url;
+                    opened = $"Read the job description from {page.Url}. ";
+                }
+                else { draft.Description = word == "skip" ? "" : text; draft.JobUrl = null; }
+                if (!Zone(zone, out var browserZone)) return Ask("zone", opened + "Which timezone should I use? Give its name, for example America/Chicago or UTC.");
                 draft.Zone = browserZone.Id;
-                return Ask("date", DatePrompt(draft.Zone));
+                return Ask("date", opened + DatePrompt(draft.Zone));
             case "plan:zone":
                 if (!Zone(text, out var selectedZone)) return "I don’t recognize that timezone. Use a name such as America/Chicago or UTC.";
                 draft.Zone = selectedZone.Id;
@@ -142,15 +153,28 @@ public static class ChatPlanning
                 ? "Please say 'yes' to the public company lookup, 'no' to prepare without it, or 'cancel' to discard."
                 : "Say 'yes' to save the target without research, or 'cancel'.";
             if (string.IsNullOrWhiteSpace(draft.Role)) return End(session, context, "The role is missing from this draft. Please start a new plan.");
-            var target = new InterviewTarget { WorkspaceId = session.WorkspaceId, Company = draft.Company ?? "", Role = draft.Role,
-                Level = "Not specified", Round = "Not specified", Description = draft.Description ?? "", InterviewAt = interview.UtcDateTime, InterviewZone = tz.Id,
-                ResearchStatus = named ? "Research declined; no lookup was made." : "No named employer; no lookup was made." };
+            var target = new InterviewTarget
+            {
+                WorkspaceId = session.WorkspaceId,
+                Company = draft.Company ?? "",
+                Role = draft.Role,
+                Level = "Not specified",
+                Round = "Not specified",
+                Description = draft.Description ?? "",
+                JobUrl = draft.JobUrl,
+                InterviewAt = interview.UtcDateTime,
+                InterviewZone = tz.Id,
+                ResearchStatus = named ? "Research declined; no company lookup was made." : "No named employer; no company lookup was made."
+            };
             if (named && Yes(word) && PublicResearch.IsCompany(target.Company))
             {
                 var result = prepared?.Research ?? await research.FindForPlan(target.Company, ct);
                 target.ResearchedAt = DateTime.UtcNow; target.ResearchStatus = result.Status;
                 target.ResearchJson = JsonSerializer.Serialize(result.Sources);
             }
+            if (draft.JobUrl is { } jobUrl)
+                target.ResearchJson = JsonSerializer.Serialize(target.Sources().Append(
+                    new ResearchSource("Public job page (read)", "Job description", jobUrl, "User-selected source text; verify the posting with the employer.")));
             db.Add(target); session.TargetId = target.Id;
             var packet = await Packet(target, db, ct);
             if (prepared?.Question is { } question) packet += "\nCoach rehearsal question (not a reported employer question): " + question;
