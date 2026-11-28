@@ -161,3 +161,44 @@ test('a live reply is readable before completion, can be stopped upstream, and r
   assert.equal(await thread.locator('li.assistant p').last().textContent(), saved.messages.at(-1).text);
   assert.deepEqual((await read('workspace')).facts.map(f => f.claim), [prompt]);
 });
+
+test('fast and final-only replies get distinct browser paints before navigating or replacing the preview', async t => {
+  const app = await localHost(t), browser = await launchBrowser(t);
+  const page = await browser.newPage({reducedMotion:'no-preference'});
+  let finalOnly = false, savedText;
+  await page.route('**/turns', async route => {
+    const response = await route.fetch();
+    const done = JSON.parse((await response.text()).trimEnd().split('\n').at(-1));
+    savedText = done.text;
+    const half = Math.floor(savedText.length / 2);
+    const deltas = [savedText.slice(0, half), savedText.slice(half)].map(text => ({type:'delta', text}));
+    // Deliver the entire wire response in one read, as a fast provider or buffering proxy can.
+    await route.fulfill({response, body:(finalOnly ? [done] : [...deltas, done]).map(e => JSON.stringify(e)).join('\n') + '\n'});
+  });
+  await page.goto(app.url);
+  await page.getByRole('button', {name:'Open my local workspace'}).click();
+  const input = page.getByLabel('Message your coach'), saved = page.locator('.transcript[aria-busy="false"]');
+  async function send(prompt) {
+    await input.fill(prompt);
+    await page.evaluate(() => {
+      window.painted = [];
+      function sample() {
+        const text = document.querySelector('.transcript[aria-busy="true"] > li.assistant:last-child p')?.textContent;
+        if (text && text !== window.painted.at(-1)) window.painted.push(text);
+        window.sampleFrame = requestAnimationFrame(sample);
+      }
+      sample();
+    });
+    await input.press('Enter');
+    await saved.getByText(prompt, {exact:true}).waitFor();
+    assert.equal(await saved.locator('li.assistant p').last().textContent(), savedText);
+    const paints = await page.evaluate(() => { cancelAnimationFrame(window.sampleFrame); return window.painted; });
+    assert.ok(paints.every(text => savedText.startsWith(text)));
+    return paints.filter(text => text !== savedText);
+  }
+  assert.ok((await send('Go through an example interview question with me.')).length >= 2, 'new chat redirected before the burst was painted');
+  finalOnly = true;
+  assert.ok((await send('Remember: Practice one question at a time.')).length >= 2, 'the terminal frame replaced the preview in one paint');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  assert.deepEqual(await send('Remember: Use short examples.'), [], 'reduced motion should show available text immediately');
+});

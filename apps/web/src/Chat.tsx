@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, RequestError, streamTurn, type Act, type ChatSession, type Workspace } from "./client";
+import { replyPreview } from "./replyPreview";
 import { Discovery } from "./Discovery";
 import { VoiceInput } from "./Voice";
 import { DocumentImport } from "./ExperienceDocuments";
@@ -7,7 +8,7 @@ import { Compass, Icon, StarterLabel, chatUrl, modeName, modeIcon, starts } from
 
 type Message = { id: string; speaker: string; text: string; mode: string; vote: string | null; nextChatId: string | null; requestId: string | null };
 type Detail = { session: ChatSession; messages: Message[]; pendingSearch: string | null };
-type Reply = { prompt: string; text: string; state: "writing" | "saved" | "stopped" };
+type Reply = { prompt: string; text: string; final?: string; state: "writing" | "saved" | "stopped" };
 type Props = { data: Workspace; act: Act; busy: boolean };
 const date = (s: string) => new Date(s).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
@@ -16,6 +17,7 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
   const [reply, setReply] = useState<Reply | null>(null);
   const pending = !!reply && reply.state !== "stopped";
   const generation = useRef<AbortController | null>(null), thread = useRef<HTMLDivElement>(null);
+  const showFull = useRef<(() => void) | null>(null);
   const [attempt, retry] = useState(0);
   const documentRead = useRef<AbortController | null>(null), [readStopped, setReadStopped] = useState(false);
   const startKey = useRef(crypto.randomUUID()), turnKey = useRef(crypto.randomUUID());
@@ -62,21 +64,26 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
       generation.current = controller;
       refocus.current = action === "say"; scrollNext.current = true;
       setError(""); setReply({prompt: action === "say" ? text.trim() : "Finish session", text: "", state: "writing"});
+      const preview = replyPreview(value => {
+        if (!current() || signal.aborted) return;
+        if (last.current && thread.current && last.current.getBoundingClientRect().bottom <= thread.current.getBoundingClientRect().bottom + 32)
+          scrollNext.current = true;
+        setReply(r => r && {...r, text: value});
+      }, signal);
+      showFull.current = preview.showAll;
       let active = id;
       try {
         if (!active) active = (await api<{id:string}>("chats", "POST", { requestId: startKey.current }, signal)).id;
         const answer = await streamTurn(active, { text, action, requestId, revision: session?.revision ?? 0,
-          zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }, signal, delta => {
-          if (!current() || signal.aborted) return;
-          if (last.current && thread.current && last.current.getBoundingClientRect().bottom <= thread.current.getBoundingClientRect().bottom + 32)
-            scrollNext.current = true;
-          setReply(r => r && {...r, text: r.text + delta});
-        });
+          zone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" }, signal, preview.append);
         if (!current()) return;
-        setReply(r => r && {...r, text: answer.text, state: "saved"});
-        if (id !== answer.id) { location.hash = chatUrl(answer.id); return; }
-        const latest = await api<Detail>(`chats/${id}`, "GET", undefined, signal);
+        setReply(r => r && {...r, state: "saved", final: answer.text});
+        const [latest] = await Promise.all([
+          id === answer.id ? api<Detail>(`chats/${id}`, "GET", undefined, signal) : null,
+          preview.finish(answer.text)
+        ]);
         if (!current()) return;
+        if (!latest) { location.hash = chatUrl(answer.id); return; }
         scrollNext.current = true; setDetail(latest);
         turnKey.current = crypto.randomUUID(); setText(""); setReply(null);
       } catch (e) {
@@ -104,7 +111,7 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
           turnKey.current = crypto.randomUUID();
         }
         throw e;
-      } finally { generation.current = null; }
+      } finally { preview.dispose(); showFull.current = null; generation.current = null; }
     });
   };
   const lastMsg = detail?.messages.at(-1);
@@ -115,7 +122,8 @@ export function Chat({ data, act, busy, id, newKind }: Props & { id?: string; ne
   const attachment = <DocumentImport compact change={act} busy={busy}/>;
   const composer = <form ref={form} className="composer" onSubmit={e => { e.preventDefault(); send("say"); }}>
     {pending ? <div className="composer-toolbar reply-controls"><span role="status">{reply.state === "saved" ? "Reply saved." : reply.text ? "Coach is replying…" : "Waiting for your coach…"}</span>
-      {reply.state === "writing" && <button autoFocus className="quiet" type="button" onClick={() => generation.current?.abort()}>Stop reply</button>}</div> :
+      {reply.state === "writing" ? <button autoFocus className="quiet" type="button" onClick={() => generation.current?.abort()}>Stop reply</button> :
+        reply.text !== reply.final && <button className="quiet" type="button" onClick={() => showFull.current?.()}>Show full reply</button>}</div> :
     <fieldset disabled={busy}><VoiceInput key={session?.revision ?? 0} label="Message your coach" maxLength={session?.kind === "mock" ? 3000 : 8000}
       required value={text} onChange={setText} prompt={lastMsg?.text}
       placeholder={session ? "Reply to your coach…" : "Ask about your job search…"}
